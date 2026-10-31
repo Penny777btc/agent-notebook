@@ -17,6 +17,7 @@ A **local-first notebook shared by you and all your AI agents**.
 - **Agents call one tool**: `notebook_capture { text }`. The router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`).
 - **Links**: write `[[Page title]]` anywhere; it resolves by title across notebooks, renders as a link, and the target shows **backlinks**.
 - **Reading**: the home page is a quick-capture box, the inbox, and *today's feed* grouped by notebook; each notebook has kanban / timeline / table views.
+- **Charts**: numbers an agent passes in `properties` (`{ amount: 35 }`, `{ weight: 71.5 }`) — or that you type as `[amount:: 35]` / `weight:: 71.5` — are kept per entry as Obsidian/Dataview inline fields and plotted per day in the notebook's **图表** view (sum / average / latest, 7 / 30 / 90 days / all, hover for the entries, click to open the day). `notebook_metrics` gives agents the same series.
 
 ## Quick start
 
@@ -91,6 +92,7 @@ While `serve` runs, `POST http://127.0.0.1:3777/mcp` with `Authorization: Bearer
 | `notebook_capture` | write | **the one call**: route text to the right notebook (journal entry / card / page), returns related notes |
 | `notebook_list_notebooks` / `notebook_create_notebook` | read / write | areas with kind, keywords, columns |
 | `notebook_today` | read | everything recorded on a day, grouped by notebook |
+| `notebook_metrics` | read | numeric series of a notebook (`amount`, `weight` …): count / sum / avg / min / max / latest + points, optional `key`, `from`, `to` |
 | `notebook_move_note` | write | move a note (e.g. out of the inbox); the router learns |
 | `notebook_whoami` | — | token name, scopes, folder limits |
 | `notebook_list_boards` / `notebook_get_board` | read | boards, columns, cards (optionally one `date`) |
@@ -109,7 +111,7 @@ vault/
   收件箱/_notebook.md          # inbox: true
   健康/
     _notebook.md               # kind: journal, keywords: [睡眠, 运动, …]
-    2026-10-31.md              # one page per day, "## 09:12 · title" entries
+    2026-10-31.md              # one page per day, "## 09:12 · title" entries, numbers as "[weight:: 71.5]" fields
   阅读/_notebook.md            # kind: pages
   Alpha看板/
     _notebook.md               # kind: board, columns: [新发现, 关注中, 已验证, 归档]

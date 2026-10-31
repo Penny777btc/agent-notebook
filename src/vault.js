@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
+import { fieldsLine } from './metrics.js';
 
 export const DEFAULT_COLUMNS = ['待处理', '进行中', '已完成'];
 const SUMMARY_SYSTEM_KEYS = new Set(['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries']);
@@ -343,16 +344,20 @@ export class Vault {
     const rel = `${folder}/${day}${NOTE_EXT}`;
     const time = new Date().toTimeString().slice(0, 5);
     const heading = `## ${time}${title ? ' · ' + title : ''}${source ? `  <small>${source}</small>` : ''}`;
-    const block = `${heading}\n\n${String(text || '').trim()}\n`;
+    // scalar facts (amount, weight …) live inside the entry as Dataview-style inline fields, so a day
+    // with several entries keeps every value and the chart view can read them back per entry
+    const fields = fieldsLine(properties);
+    const pageProps = Object.fromEntries(Object.entries(properties).filter(([, v]) => v && typeof v === 'object'));
+    const block = `${heading}\n\n${String(text || '').trim()}${fields ? '\n\n' + fields : ''}\n`;
     if (!fs.existsSync(this.resolve(rel))) {
-      this.createNote({ folder, title: day, body: block, properties: { date: day, tags, source, entries: 1, ...properties } });
+      this.createNote({ folder, title: day, body: block, properties: { date: day, tags, source, entries: 1, ...pageProps } });
       return { ...this.getNote(rel), entry: heading };
     }
     const note = this.getNote(rel);
     const p = note.properties;
     const mergedTags = Array.from(new Set([...(Array.isArray(p.tags) ? p.tags : []), ...tags]));
     const sources = Array.from(new Set([...(Array.isArray(p.sources) ? p.sources : p.source ? [p.source] : []), ...(source ? [source] : [])]));
-    this.updateNote(rel, { append: block, properties: { tags: mergedTags, sources, source: sources.length === 1 ? sources[0] : 'multiple', entries: (p.entries || 0) + 1, ...properties } });
+    this.updateNote(rel, { append: block, properties: { tags: mergedTags, sources, source: sources.length === 1 ? sources[0] : 'multiple', entries: (p.entries || 0) + 1, ...pageProps } });
     return { ...this.getNote(rel), entry: heading };
   }
 

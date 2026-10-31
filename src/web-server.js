@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { buildMcpServer } from './mcp.js';
 import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
 import { Router, capture, digest } from './notebooks.js';
+import { metrics } from './metrics.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -72,6 +73,8 @@ export function createApp({ vault, auth, backup }) {
     auth.audit(req.principal, 'update_notebook', nb.folder, { via: 'web', fields: Object.keys(req.body) });
     res.json(nb);
   });
+  // numeric series of a notebook (amount, weight …) for the chart view; registered before /notebooks/* would swallow it
+  api.get('/metrics/*', guard('read', notePath), (req, res) => res.json(metrics(vault, notePath(req), { from: req.query.from, to: req.query.to, key: req.query.key })));
   api.get('/today', guard('read'), (req, res) => {
     const d = digest(vault, req.query.date || undefined);
     res.json({ ...d, groups: d.groups.filter((g) => auth.can(req.principal, 'read', g.notebook.folder)) });

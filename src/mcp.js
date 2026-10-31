@@ -3,6 +3,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Router, capture, digest } from './notebooks.js';
+import { metrics } from './metrics.js';
 
 const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = (err) => ({ isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] });
@@ -63,6 +64,22 @@ export function buildMcpServer({ vault, auth, principal }) {
   }, guarded('read', null, function today({ date }) {
     const d = digest(vault, date);
     return { ...d, groups: d.groups.filter((g) => auth.can(principal, 'read', g.notebook.folder)) };
+  }));
+
+  server.registerTool('notebook_metrics', {
+    title: 'Numeric metrics of a notebook',
+    description: 'Time series of the numbers recorded in a notebook (amount, weight, steps … — whatever was passed as properties or written as [key:: value]). Per key: count, sum, avg, min, max, latest, plus the points. Use when the owner asks "how much did I spend this month" or "how is my weight trending".',
+    inputSchema: {
+      notebook: z.string().describe('Notebook folder, e.g. 财务'),
+      key: z.string().optional().describe('Only this property, e.g. amount'),
+      from: z.string().optional().describe('YYYY-MM-DD inclusive'),
+      to: z.string().optional().describe('YYYY-MM-DD inclusive')
+    },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', (a) => a.notebook, function notebook_metrics({ notebook, key, from, to }) {
+    const m = metrics(vault, notebook, { key, from, to });
+    for (const k of Object.keys(m.series)) if (m.series[k].length > 500) m.series[k] = m.series[k].slice(-500);
+    return m;
   }));
 
   server.registerTool('notebook_move_note', {

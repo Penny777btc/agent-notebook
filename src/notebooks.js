@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { localDate } from './vault.js';
+import { extractFields } from './metrics.js';
 
 const INBOX_FOLDER = '收件箱';
 // whole CJK phrases of 2-6 chars (bounded by non-CJK); longer runs are sentences, not keywords
@@ -109,6 +110,9 @@ function hashtags(text) {
 export function capture(vault, router, { text, title, notebook, tags = [], source, properties = {}, date } = {}) {
   if (!text && !title) throw Object.assign(new Error('text is required'), { status: 400 });
   text = String(text || '');
+  // `[amount:: 35]` / `weight:: 71.5` typed inside the text count as properties too (Obsidian Dataview syntax)
+  const inText = extractFields(text);
+  properties = { ...inText, ...(properties || {}) };
   const titleGiven = !!title;
   title = title || deriveTitle(text);
   tags = Array.from(new Set([...(tags || []), ...hashtags(text)]));
@@ -132,7 +136,8 @@ export function capture(vault, router, { text, title, notebook, tags = [], sourc
   let note;
   let entry = null;
   if (meta.kind === 'journal') {
-    const r = vault.appendJournal(folder, { title: titleGiven ? title : undefined, text, source, tags, properties: { ...properties }, date });
+    const entryProps = Object.fromEntries(Object.entries(properties).filter(([k]) => !(k in inText))); // fields already in the text stay where they are
+    const r = vault.appendJournal(folder, { title: titleGiven ? title : undefined, text, source, tags, properties: entryProps, date });
     note = r; entry = r.entry;
   } else {
     note = vault.createNote({ folder, title, body: text, properties: { ...properties, ...common } });

@@ -45,7 +45,7 @@ function linkify(md) {
     return target
       ? `<a class="wikilink" href="#/note/${encodeURIComponent(target)}" title="${esc(target)}">${text}</a>`
       : `<a class="wikilink missing" href="#" data-missing="${esc(name.trim())}" title="还没有这一页">${text}</a>`;
-  });
+  }).replace(/\[([^\[\]:\n]{1,40}?)::\s*([^\]\n]+?)\]/g, (m, k, v) => `<span class="field"><span class="fk">${esc(k.trim())}</span>${esc(v.trim())}</span>`); // [amount:: 35] inline fields
 }
 function renderMd(md) {
   const html = marked.parse(linkify(md), { gfm: true, breaks: true });
@@ -280,10 +280,11 @@ async function viewFolder(main, folder) {
 // ---------------------------------------------------------------- notebook: kanban / timeline / table
 async function viewNotebook(main, folder) {
   const dateFilter = state.nbDate?.[folder] ?? '';
-  const nb = await get(`/api/notebooks/${encPath(folder)}${dateFilter ? `?date=${dateFilter}` : ''}`);
+  const [nb, mx] = await Promise.all([get(`/api/notebooks/${encPath(folder)}${dateFilter ? `?date=${dateFilter}` : ''}`), get(`/api/metrics/${encPath(folder)}`).catch(() => null)]);
+  const hasChart = nb.kind === 'journal' || !!mx?.keys?.length;
   const defaultView = nb.kind === 'board' ? 'kanban' : nb.kind === 'journal' ? 'timeline' : 'table';
   let view = localStorage.getItem('view:' + folder) || defaultView;
-  if (view === 'kanban' && nb.kind !== 'board') view = defaultView;
+  if ((view === 'kanban' && nb.kind !== 'board') || (view === 'chart' && !hasChart)) view = defaultView;
   const page = el('div', { class: 'page wide' });
   page.append(el('div', { style: 'display:flex;align-items:center;gap:12px' }, el('div', { class: 'page-icon', style: 'font-size:44px;margin:0' }, nb.icon),
     el('div', {}, el('h1', { class: 'page-title', style: 'margin:0' }, nb.title), el('div', { class: 'muted', style: 'font-size:13px' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词：' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`))));
@@ -295,6 +296,7 @@ async function viewNotebook(main, folder) {
     nb.kind === 'board' && el('button', { class: 'btn small' + (view === 'kanban' ? ' active' : ''), onclick: () => setView('kanban') }, '▦ 看板'),
     el('button', { class: 'btn small' + (view === 'timeline' ? ' active' : ''), onclick: () => setView('timeline') }, '☷ 时间线'),
     el('button', { class: 'btn small' + (view === 'table' ? ' active' : ''), onclick: () => setView('table') }, '☰ 表格'),
+    hasChart && el('button', { class: 'btn small' + (view === 'chart' ? ' active' : ''), onclick: () => setView('chart') }, '📈 图表'),
     el('span', { style: 'width:12px' }),
     el('button', { class: 'btn small' + (dateFilter === today() ? ' active' : ''), onclick: () => setDate(dateFilter === today() ? '' : today()) }, '今天'),
     el('input', { type: 'date', value: dateFilter, onchange: (e) => setDate(e.target.value) }),
@@ -313,6 +315,8 @@ async function viewNotebook(main, folder) {
   } else if (view === 'table') {
     const extra = [...new Set(nb.notes.flatMap((n) => Object.keys(n.props || {})))].slice(0, 6);
     page.append(noteTable(nb.notes, { showFolder: false, extraProps: extra }));
+  } else if (view === 'chart') {
+    page.append(chartView(folder, nb, mx));
   } else {
     page.append(timeline(nb));
   }
@@ -334,6 +338,179 @@ function timeline(nb) {
     }
   }
   return box;
+}
+
+// ---------------------------------------------------------------- charts: numeric properties over time
+const svg = (tag, attrs = {}, ...children) => {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v);
+  for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) n.append(c instanceof Node ? c : String(c));
+  return n;
+};
+// keys that are amounts to add up per day (spend, steps…); everything else is a level to average (weight, blood pressure…)
+const SUM_KEY_RE = /amount|金额|花费|支出|收入|cost|expense|spend|income|revenue|pages|页|steps|步数|calories|卡路里|distance|公里|km|minutes|分钟|hours|小时|count|次数|杯|ml|毫升|volume|qty|quantity|数量/i;
+const RANGES = [['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['all', '全部']];
+const AGGS = [['sum', '求和'], ['avg', '平均'], ['last', '最新']];
+const fmtNum = (v, unit = '') => { if (v === undefined || v === null || Number.isNaN(v)) return '—'; const a = Math.abs(v); const s = a >= 10000 ? (v / 10000).toFixed(a >= 1e6 ? 0 : 1) + '万' : a >= 100 ? Math.round(v).toLocaleString('en-US') : a >= 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v * 100) / 100); return unit && /^[¥￥$€£]$/.test(unit) ? unit + s : s + (unit ? ' ' + unit : ''); };
+const fmtShortDate = (d) => d.slice(5).replace('-', '/');
+
+function chartView(folder, nb, mx) {
+  const box = el('div', { class: 'charts' });
+  const rangeKey = 'range:' + folder;
+  const range = localStorage.getItem(rangeKey) || '30';
+  box.append(el('div', { class: 'toolbar', style: 'border:none;margin-bottom:4px;padding-top:0' },
+    el('span', { class: 'muted', style: 'font-size:13px' }, '时间范围'),
+    RANGES.map(([v, label]) => el('button', { class: 'btn small' + (range === v ? ' active' : ''), onclick: () => { localStorage.setItem(rangeKey, v); route(); } }, label)),
+    el('div', { class: 'spacer' }),
+    el('span', { class: 'muted', style: 'font-size:12px' }, mx?.keys?.length ? `${mx.keys.length} 个数字属性` : '')));
+  if (!mx || !mx.keys.length) {
+    box.append(el('div', { class: 'card-box', style: 'color:var(--text-2);font-size:14px;line-height:1.7' },
+      el('div', { style: 'font-weight:600;color:var(--text)' }, '还没有可以画图的数字'),
+      el('div', {}, 'agent 调用 notebook_capture 时把数字放进 ', el('code', {}, 'properties'), '（例如 ', el('code', {}, '{ amount: 35 }'), '、', el('code', {}, '{ weight: 71.5 }'), '），或者你在记录框里直接写 ', el('code', {}, '午饭 [amount:: 35]'), ' / ', el('code', {}, 'weight:: 71.5'), '。'),
+      el('div', {}, '每个数字属性会在这里变成一张按天的图表。')));
+    return box;
+  }
+  for (const k of mx.keys) box.append(metricCard(folder, nb, k, mx.series[k.key] || [], range));
+  return box;
+}
+
+function metricCard(folder, nb, info, points, range) {
+  const aggKey = `agg:${folder}:${info.key}`;
+  const agg = localStorage.getItem(aggKey) || (SUM_KEY_RE.test(info.key) ? 'sum' : 'avg');
+  const unit = info.unit || '';
+  const todayStr = today();
+  const from = range === 'all' ? (points[0]?.date || todayStr) : shiftDate(todayStr, -(Number(range) - 1));
+  const to = range === 'all' ? (points[points.length - 1]?.date > todayStr ? points[points.length - 1].date : todayStr) : todayStr;
+  const inRange = points.filter((p) => p.date >= from && p.date <= to);
+
+  // one value per day
+  const byDay = new Map();
+  for (const p of inRange) { if (!byDay.has(p.date)) byDay.set(p.date, []); byDay.get(p.date).push(p); }
+  const days = [];
+  for (let d = from; d <= to; d = shiftDate(d, 1)) {
+    const items = byDay.get(d) || [];
+    const vals = items.map((p) => p.value);
+    const value = !vals.length ? null : agg === 'sum' ? vals.reduce((a, b) => a + b, 0) : agg === 'avg' ? vals.reduce((a, b) => a + b, 0) / vals.length : vals[vals.length - 1];
+    days.push({ date: d, value, items });
+    if (days.length > 2000) break;
+  }
+  const have = days.filter((d) => d.value !== null);
+  const total = inRange.reduce((a, p) => a + p.value, 0);
+  const latest = inRange[inRange.length - 1];
+
+  const card = el('div', { class: 'metric-card' });
+  const head = el('div', { class: 'metric-head' },
+    el('div', { class: 'metric-title' }, el('span', { class: 'mk' }, info.key), unit && el('span', { class: 'muted', style: 'font-size:12px' }, unit)),
+    el('div', { class: 'spacer' }),
+    el('div', { class: 'seg' }, AGGS.map(([v, label]) => el('button', { class: v === agg ? 'active' : '', onclick: () => { localStorage.setItem(aggKey, v); route(); } }, label))));
+  card.append(head);
+  const stat = (label, v) => el('div', { class: 'stat' }, el('div', { class: 'sv' }, v), el('div', { class: 'sl' }, label));
+  card.append(el('div', { class: 'metric-stats' },
+    agg === 'sum' ? stat('合计', fmtNum(total, unit)) : stat('最低', fmtNum(inRange.length ? Math.min(...inRange.map((p) => p.value)) : null, unit)),
+    stat('平均', fmtNum(inRange.length ? total / inRange.length : null, unit)),
+    stat('最新', latest ? fmtNum(latest.value, unit) : '—'),
+    stat('最高', fmtNum(inRange.length ? Math.max(...inRange.map((p) => p.value)) : null, unit)),
+    stat('记录', `${inRange.length} 条 · ${have.length} 天`)));
+
+  if (!have.length) { card.append(el('div', { class: 'empty', style: 'padding:24px 0;text-align:center' }, `这 ${range === 'all' ? '' : range + ' 天'}里没有「${info.key}」的记录`)); return card; }
+
+  const wrap = el('div', { class: 'chart-wrap' });
+  const tip = el('div', { class: 'chart-tip hidden' });
+  let drawnW = 0;
+  const draw = () => {
+  // ---- geometry: 1 viewBox unit = 1 CSS px, redrawn when the card is resized ----
+  const W = Math.max(320, Math.round(wrap.clientWidth) || 760), H = 220, padL = 52, padR = 16, padT = 14, padB = 28;
+  if (W === drawnW) return; drawnW = W;
+  wrap.innerHTML = '';
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const bars = agg === 'sum';
+  const vals = have.map((d) => d.value);
+  let yMin = bars ? Math.min(0, ...vals) : Math.min(...vals), yMax = bars ? Math.max(0, ...vals) : Math.max(...vals);
+  if (!bars) { const pad = (yMax - yMin) * 0.25 || Math.abs(yMax) * 0.1 || 1; yMin -= pad; yMax += pad; }
+  if (yMax === yMin) yMax = yMin + 1;
+  const ticks = niceTicks(yMin, yMax, 4);
+  yMin = Math.min(yMin, ticks[0]); yMax = Math.max(yMax, ticks[ticks.length - 1]);
+  const n = days.length;
+  const slot = plotW / n;
+  const x = (i) => padL + slot * (i + 0.5);
+  const y = (v) => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  const g = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'chart' });
+  for (const t of ticks) {
+    g.append(svg('line', { x1: padL, x2: W - padR, y1: y(t), y2: y(t), class: 'grid' }));
+    g.append(svg('text', { x: padL - 8, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' }, fmtNum(t)));
+  }
+  // x labels: ~6 of them
+  const every = Math.max(1, Math.ceil(n / 6));
+  days.forEach((d, i) => { if (i % every === 0 || i === n - 1) g.append(svg('text', { x: x(i), y: H - 8, class: 'tick', 'text-anchor': i === n - 1 ? 'end' : i === 0 ? 'start' : 'middle' }, n > 400 ? d.date.slice(0, 7) : fmtShortDate(d.date))); });
+
+  if (bars) {
+    const bw = Math.max(2, Math.min(28, slot - 2));
+    const y0 = y(0);
+    days.forEach((d, i) => { if (d.value === null) return; const yy = y(d.value); const top = Math.min(yy, y0), h = Math.max(1.5, Math.abs(yy - y0)); g.append(svg('rect', { x: x(i) - bw / 2, y: top, width: bw, height: h, rx: Math.min(3, bw / 2), class: 'bar', 'data-i': i })); });
+  } else {
+    // line through recorded days (gaps where nothing was recorded), area fill, dots
+    let dPath = '', aPath = '';
+    let runStart = null;
+    const segs = [];
+    days.forEach((d, i) => { if (d.value === null) { if (runStart !== null) { segs.push([runStart, i - 1]); runStart = null; } } else if (runStart === null) runStart = i; });
+    if (runStart !== null) segs.push([runStart, n - 1]);
+    for (const [a, b] of segs) {
+      const pts = []; for (let i = a; i <= b; i++) pts.push([x(i), y(days[i].value)]);
+      dPath += pts.map(([px, py], j) => `${j ? 'L' : 'M'}${px.toFixed(1)} ${py.toFixed(1)}`).join(' ') + ' ';
+      aPath += `M${pts[0][0].toFixed(1)} ${(padT + plotH).toFixed(1)} ` + pts.map(([px, py]) => `L${px.toFixed(1)} ${py.toFixed(1)}`).join(' ') + ` L${pts[pts.length - 1][0].toFixed(1)} ${(padT + plotH).toFixed(1)} Z `;
+    }
+    g.append(svg('path', { d: aPath, class: 'area' }), svg('path', { d: dPath, class: 'line' }));
+    days.forEach((d, i) => { if (d.value !== null) g.append(svg('circle', { cx: x(i), cy: y(d.value), r: n > 120 ? 2 : 3.5, class: 'dot', 'data-i': i })); });
+  }
+  // direct label on the latest value
+  const lastIdx = days.length - 1 - [...days].reverse().findIndex((d) => d.value !== null);
+  const last = days[lastIdx];
+  g.append(svg('text', { x: Math.min(x(lastIdx), W - padR - 4), y: y(last.value) - 8, class: 'label', 'text-anchor': x(lastIdx) > W - 80 ? 'end' : 'middle' }, fmtNum(last.value, unit)));
+
+  // hover layer: one hit column per day
+  const cursor = svg('line', { y1: padT, y2: padT + plotH, class: 'cursor hidden' });
+  g.append(cursor);
+  wrap.append(g, tip);
+  days.forEach((d, i) => {
+    const hit = svg('rect', { x: padL + slot * i, y: padT, width: slot, height: plotH, class: 'hit' });
+    hit.addEventListener('mouseenter', () => {
+      cursor.setAttribute('x1', x(i)); cursor.setAttribute('x2', x(i)); cursor.classList.remove('hidden');
+      g.querySelectorAll('.bar.on,.dot.on').forEach((m) => m.classList.remove('on'));
+      g.querySelector(`[data-i="${i}"]`)?.classList.add('on');
+      tip.innerHTML = '';
+      tip.append(el('div', { class: 'td' }, d.date + (d.date === todayStr ? ' · 今天' : '')));
+      if (d.value === null) tip.append(el('div', { class: 'muted' }, '没有记录'));
+      else {
+        tip.append(el('div', { class: 'tv' }, fmtNum(d.value, unit), el('span', { class: 'muted', style: 'font-size:11px;margin-left:6px' }, d.items.length > 1 ? `${AGGS.find((a) => a[0] === agg)[1]} · ${d.items.length} 条` : '')));
+        for (const it of d.items.slice(0, 6)) tip.append(el('div', { class: 'ti' }, el('span', { class: 'muted' }, it.time ? it.time + ' ' : ''), it.title, el('span', { style: 'margin-left:auto;padding-left:10px' }, fmtNum(it.value, it.unit || unit))));
+        if (d.items.length > 6) tip.append(el('div', { class: 'muted' }, `… 还有 ${d.items.length - 6} 条`));
+        tip.append(el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' }, '点击打开这一天'));
+      }
+      tip.classList.remove('hidden');
+      const px = x(i);
+      tip.style.left = (px > W * 0.6 ? px - tip.offsetWidth - 12 : px + 12) + 'px';
+    });
+    hit.addEventListener('click', () => { if (d.items.length) openPeek(d.items[0].path); });
+    g.append(hit);
+  });
+  g.addEventListener('mouseleave', () => { tip.classList.add('hidden'); cursor.classList.add('hidden'); g.querySelectorAll('.on').forEach((m) => m.classList.remove('on')); });
+  };
+  card.append(wrap);
+  requestAnimationFrame(draw);
+  if (window.ResizeObserver) new ResizeObserver(() => draw()).observe(wrap);
+  return card;
+}
+
+function niceTicks(min, max, count = 4) {
+  const span = max - min || 1;
+  const rough = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= count + 1) || mag * 10;
+  const start = Math.floor(min / step) * step;
+  const out = [];
+  for (let v = start; v <= max + step * 0.001 && out.length < 12; v += step) out.push(Math.round(v * 1e6) / 1e6);
+  return out;
 }
 
 async function kanban(folder, dateFilter) {

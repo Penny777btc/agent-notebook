@@ -44,6 +44,7 @@ Write `[[页面标题]]` anywhere in text to link to another note; the notebook 
 ## Conventions
 
 - One capture = one thought / finding. Keep the title a headline (≤ 60 chars); put detail in `text`.
-- Facts go in `properties` ({ url, amount, ticker, weight, pages }) so they become table columns.
+- **Numbers always go in `properties`** ({ amount: 35, weight: 71.5, steps: 8200, pages: 40 }), not only in the text: the notebook keeps them per entry (as `[amount:: 35]` inline fields in journals) and charts them per day in the notebook's 图表 view. Use one stable key per kind of number (`amount` for money, `weight`, `steps`, `sleep_hours` …) so the series stay continuous; a unit may ride along as a string ("71.5kg", "¥35"). Other facts ({ url, ticker, category }) go in `properties` too and become table columns.
+- `notebook_metrics { notebook, key?, from?, to? }` answers "how much did I spend this month" / "weight trend": per key count, sum, avg, min, max, latest and the points. Sum it yourself only when the owner wants a different cut.
 - Chinese folder names are normal. Paths are vault-relative and end in `.md`.
 - `403 lacks … permission` means your token is read-only or folder-limited: tell the owner, don't retry.
