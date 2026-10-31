@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Notebook</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📓</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app" class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="ws">
+      <span class="ws-icon">📓</span>
+      <span class="ws-name">Agent Notebook</span>
+      <button class="icon-btn" id="collapse" title="收起侧边栏">«</button>
+    </div>
+    <div class="side-search">
+      <input id="search" type="search" placeholder="搜索…  ⌘K" autocomplete="off">
+    </div>
+    <nav class="side-section">
+      <div class="side-label">看板 <button class="mini-btn" id="new-board" title="新建看板">+</button></div>
+      <div id="board-list"></div>
+    </nav>
+    <nav class="side-section grow">
+      <div class="side-label">页面 <button class="mini-btn" id="new-page" title="新建页面">+</button></div>
+      <div id="tree"></div>
+    </nav>
+    <nav class="side-footer">
+      <a href="#/agents" class="side-item" data-route="agents"><span class="emoji">🔌</span>接入 Agent</a>
+      <a href="#/activity" class="side-item" data-route="activity"><span class="emoji">🕒</span>活动日志</a>
+      <a href="#/settings" class="side-item" data-route="settings"><span class="emoji">⚙️</span>设置</a>
+    </nav>
+  </aside>
+  <button class="icon-btn expand" id="expand" title="展开侧边栏">»</button>
+  <main class="main" id="main"></main>
+  <aside class="peek hidden" id="peek"></aside>
+  <div class="modal hidden" id="modal"></div>
+  <div class="toast hidden" id="toast"></div>
+</div>
+<script src="/vendor/marked.js"></script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

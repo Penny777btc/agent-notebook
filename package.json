@@ -1,0 +1,25 @@
+{
+  "name": "agent-notebook",
+  "version": "0.1.0",
+  "description": "Local-first, Markdown-based notebook for humans and AI agents. Notion-style UI, Obsidian-compatible vault, MCP server with token auth, GitHub backup.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "agent-notebook": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "mcp": "node src/cli.js mcp",
+    "token": "node src/cli.js token"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.0",
+    "gray-matter": "^4.0.3",
+    "marked": "^15.0.12",
+    "zod": "^3.23.8"
+  }
+}

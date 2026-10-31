@@ -1,0 +1,158 @@
+// Builds an MCP server bound to one authenticated principal.
+// Used by both the stdio transport (local agents) and the HTTP transport (remote agents).
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+
+const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
+const fail = (err) => ({ isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] });
+
+export function buildMcpServer({ vault, auth, principal }) {
+  const server = new McpServer({ name: 'agent-notebook', version: '0.1.0' });
+
+  const guarded = (scope, pathOf, fn) => async (args) => {
+    const target = pathOf ? pathOf(args) : '';
+    try {
+      auth.require(principal, scope, target);
+      const result = await fn(args);
+      if (scope === 'write') auth.audit(principal, fn.name || 'write', target, { via: 'mcp', args: compact(args) });
+      return text(result);
+    } catch (err) {
+      auth.audit(principal, `${scope}:denied`, target, { via: 'mcp', error: err.message });
+      return fail(err);
+    }
+  };
+
+  server.registerTool('notebook_whoami', {
+    title: 'Who am I',
+    description: 'Show the identity, scopes (read/write/admin) and folder restrictions of the current token.',
+    inputSchema: {}
+  }, async () => text({ ...principal, vault: vault.root }));
+
+  server.registerTool('notebook_list_boards', {
+    title: 'List boards',
+    description: 'List all kanban boards (folders that contain _board.md) with their columns.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true }
+  }, guarded('read', null, function list_boards() {
+    return vault.listBoards().filter((b) => auth.can(principal, 'read', b.folder));
+  }));
+
+  server.registerTool('notebook_get_board', {
+    title: 'Get board',
+    description: 'Get a board with its cards grouped by column. Optionally filter cards to one date (YYYY-MM-DD), e.g. today\'s Alpha board.',
+    inputSchema: { folder: z.string().describe('Board folder, e.g. "Alpha看板"'), date: z.string().optional().describe('YYYY-MM-DD; only cards dated that day') },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', (a) => a.folder, function get_board({ folder, date }) {
+    return vault.getBoard(folder, { date });
+  }));
+
+  server.registerTool('notebook_list_notes', {
+    title: 'List notes',
+    description: 'List notes (pages/cards) with metadata, newest first. Filter by folder, status, tag, source agent, date or updated-since.',
+    inputSchema: {
+      folder: z.string().optional().describe('Folder to list; empty = whole vault'),
+      recursive: z.boolean().optional().default(true),
+      status: z.string().optional(),
+      tag: z.string().optional(),
+      source: z.string().optional().describe('Agent name that created the note'),
+      date: z.string().optional().describe('YYYY-MM-DD'),
+      since: z.string().optional().describe('ISO timestamp; only notes updated after this'),
+      limit: z.number().int().min(1).max(500).optional().default(50)
+    },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', null, function list_notes(args) {
+    return vault.listNotes(args).filter((n) => auth.can(principal, 'read', n.path));
+  }));
+
+  server.registerTool('notebook_read_note', {
+    title: 'Read note',
+    description: 'Read one note: frontmatter properties and Markdown body.',
+    inputSchema: { path: z.string().describe('Vault-relative path ending in .md') },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', (a) => a.path, function read_note({ path }) {
+    return vault.getNote(path);
+  }));
+
+  server.registerTool('notebook_search', {
+    title: 'Search',
+    description: 'Full-text search across titles, properties and bodies.',
+    inputSchema: { query: z.string(), limit: z.number().int().min(1).max(200).optional().default(30) },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', null, function search({ query, limit }) {
+    return vault.search(query, { limit }).filter((n) => auth.can(principal, 'read', n.path));
+  }));
+
+  server.registerTool('notebook_create_note', {
+    title: 'Create note / card',
+    description: 'Create a Markdown note. If the folder is a board, the note becomes a card (status defaults to the first column). Set `source` to your agent name so the owner can see who wrote it.',
+    inputSchema: {
+      folder: z.string().describe('Target folder, e.g. "Alpha看板" or "灵感"'),
+      title: z.string(),
+      body: z.string().optional().default('').describe('Markdown body'),
+      status: z.string().optional().describe('Board column name'),
+      tags: z.array(z.string()).optional(),
+      source: z.string().optional().describe('Your agent name (defaults to the token name)'),
+      properties: z.record(z.any()).optional().describe('Extra frontmatter properties, e.g. {url, score, ticker}')
+    }
+  }, guarded('write', (a) => a.folder, function create_note({ folder, title, body, status, tags, source, properties }) {
+    return vault.createNote({ folder, title, body, properties: { ...(properties || {}), status, tags, source: source || principal.name } });
+  }));
+
+  server.registerTool('notebook_update_note', {
+    title: 'Update note',
+    description: 'Update a note: replace body, append to body, rename, change status/tags or any property. Set a property to null to remove it.',
+    inputSchema: {
+      path: z.string(),
+      title: z.string().optional(),
+      body: z.string().optional().describe('Replace the whole Markdown body'),
+      append: z.string().optional().describe('Append Markdown to the end of the body'),
+      status: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      properties: z.record(z.any()).optional()
+    }
+  }, guarded('write', (a) => a.path, function update_note({ path, title, body, append, status, tags, properties }) {
+    return vault.updateNote(path, { title, body, append, properties: { ...(properties || {}), status, tags } });
+  }));
+
+  server.registerTool('notebook_move_card', {
+    title: 'Move card',
+    description: 'Move a board card to another column (sets its status).',
+    inputSchema: { path: z.string(), status: z.string().describe('Target column name') }
+  }, guarded('write', (a) => a.path, function move_card({ path, status }) {
+    return vault.moveCard(path, status);
+  }));
+
+  server.registerTool('notebook_create_board', {
+    title: 'Create board',
+    description: 'Create a new kanban board (folder with _board.md).',
+    inputSchema: {
+      folder: z.string(),
+      title: z.string().optional(),
+      icon: z.string().optional(),
+      columns: z.array(z.string()).min(1).optional(),
+      description: z.string().optional()
+    }
+  }, guarded('write', (a) => a.folder, function create_board(args) {
+    return vault.createBoard(args);
+  }));
+
+  server.registerTool('notebook_delete_note', {
+    title: 'Delete note',
+    description: 'Move a note to the vault trash (.trash/). Recoverable by the owner.',
+    inputSchema: { path: z.string() },
+    annotations: { destructiveHint: true }
+  }, guarded('write', (a) => a.path, function delete_note({ path }) {
+    return vault.deleteNote(path);
+  }));
+
+  return server;
+}
+
+function compact(args) {
+  const out = {};
+  for (const [k, v] of Object.entries(args || {})) {
+    if (v === undefined) continue;
+    out[k] = typeof v === 'string' && v.length > 120 ? v.slice(0, 120) + '…' : v;
+  }
+  return out;
+}
