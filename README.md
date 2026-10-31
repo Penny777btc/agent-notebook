@@ -30,6 +30,16 @@ node src/cli.js serve           # http://127.0.0.1:3777
 
 Open the web UI. The home page tells you which local agents it detected; **接入 Agent** lets you connect each one with one click.
 
+## Use it on your phone
+
+Your notes live on your Mac, so the phone talks to the Mac's server — no cloud copy.
+
+1. **设置 → 手机访问**: set an access password, tick 局域网访问 (binds `0.0.0.0`), restart `serve`.
+2. Same Wi-Fi: open `http://<your-mac-ip>:3777` on the phone (the settings page lists the URLs), log in once, **Add to Home Screen** — it runs as a standalone app with its own icon.
+3. Away from home: put the port behind a tunnel — `tailscale serve --bg 3777` (private, recommended) or `cloudflared tunnel --url http://127.0.0.1:3777` (temporary public URL). Requests arriving through a tunnel always need the password; only a direct local connection is treated as the owner.
+
+Every phone login mints a revocable device token (📱 in the token list). The UI is responsive: drawer sidebar, snap-scrolling kanban columns, full-screen note view, safe-area aware.
+
 ## Connect your agents
 
 ```bash
@@ -153,7 +163,8 @@ Or in the UI under **设置 → 备份**. Interval defaults to 30 minutes. Pushi
 
 ## Security model (MVP)
 
-- Requests from loopback **without** a bearer token are treated as the owner (full access). Requests with a token get that token's scopes/folders. Non-loopback requests without a token are rejected.
+- Requests from loopback **without** a bearer token and without a forwarding header (`X-Forwarded-For`, `CF-Connecting-IP`, `X-Real-IP`, `Tailscale-User-Login`) are treated as the owner (full access). Requests with a token get that token's scopes/folders. Everything else without a token is rejected, except `POST /api/login` (owner password → device token, 5 failures lock an IP for a minute).
+- The owner password is stored as a scrypt hash in `.notebook/config.json`.
 - Tokens are stored as SHA-256 hashes; the plaintext is shown once.
 - Every write and every denied call is appended to `.notebook/audit.jsonl`, visible under **活动日志**.
 

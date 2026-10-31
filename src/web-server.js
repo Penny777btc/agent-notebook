@@ -1,4 +1,5 @@
 // HTTP server: Notion-style web UI + REST API for the owner, and an MCP endpoint (/mcp) for remote agents.
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -27,6 +28,28 @@ export function createApp({ vault, auth, backup }) {
       req.principal = null;
     }
     next();
+  });
+
+  // ---- phone / remote access: password login ---------------------------
+  const loginFailures = new Map(); // ip → { n, until }
+  app.get('/api/access', (req, res) => {
+    res.json({ authenticated: !!req.principal, principal: req.principal ? { name: req.principal.name, kind: req.principal.kind } : null, passwordSet: auth.hasPassword(), loopback: isLoopback(req) });
+  });
+  app.post('/api/login', (req, res, next) => {
+    const ip = req.socket.remoteAddress || '?';
+    const f = loginFailures.get(ip);
+    if (f && f.until > Date.now()) return res.status(429).json({ error: `尝试太多次，${Math.ceil((f.until - Date.now()) / 1000)} 秒后再试` });
+    try {
+      const t = auth.login(req.body?.password, { device: req.body?.device });
+      loginFailures.delete(ip);
+      auth.audit({ name: t.name }, 'login', 'web', { ip, device: req.body?.device });
+      res.json({ token: t.token, name: t.name });
+    } catch (err) {
+      const n = (f?.n || 0) + 1;
+      loginFailures.set(ip, { n, until: n >= 5 ? Date.now() + 60000 : 0 });
+      auth.audit({ name: 'anonymous' }, 'login:denied', 'web', { ip });
+      next(err);
+    }
   });
 
   // ---- MCP over Streamable HTTP ---------------------------------------
@@ -154,6 +177,23 @@ export function createApp({ vault, auth, backup }) {
     const entry = serverEntry({ token: t.token, vault: vault.root });
     res.status(201).json({ ...t, httpUrl: `http://127.0.0.1:${req.socket.localPort}/mcp`, json: { mcpServers: { 'agent-notebook': entry.json } }, toml: entry.toml, claudeCmd: `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${t.token} -e AGENT_NOTEBOOK_VAULT="${vault.root}" -- node "${entry.json.args[0]}" mcp` });
   });
+  // remote-access settings: owner password, bind address, LAN addresses
+  api.get('/access/settings', guard('admin'), (req, res) => res.json(accessSettings(req)));
+  api.post('/access/settings', guard('admin'), (req, res) => {
+    const { password, clearPassword, lan } = req.body || {};
+    if (clearPassword) auth.setPassword('');
+    else if (password !== undefined && password !== '') auth.setPassword(password);
+    if (lan !== undefined) auth.update((cfg) => { cfg.host = lan ? '0.0.0.0' : '127.0.0.1'; });
+    auth.audit(req.principal, 'update_access', 'web', { password: password ? 'set' : clearPassword ? 'cleared' : undefined, lan });
+    res.json(accessSettings(req));
+  });
+  function accessSettings(req) {
+    const cfg = auth.config;
+    const port = req.socket.localPort || cfg.port || 3777;
+    const lanIps = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
+    const boundLan = !!req.socket.server?.address && req.socket.server.address()?.address !== '127.0.0.1';
+    return { passwordSet: auth.hasPassword(), passwordSetAt: cfg.owner?.set || null, lan: cfg.host && cfg.host !== '127.0.0.1', boundLan, port, lanUrls: lanIps.map((ip) => `http://${ip}:${port}`), hostname: os.hostname(), devices: auth.listTokens().filter((t) => t.device) };
+  }
   api.get('/audit', guard('admin'), (req, res) => res.json(auth.readAudit({ limit: Number(req.query.limit) || 200 })));
   api.get('/tokens', guard('admin'), (req, res) => res.json(auth.listTokens()));
   api.post('/tokens', guard('admin'), (req, res) => {
@@ -193,7 +233,11 @@ export function createApp({ vault, auth, backup }) {
   return app;
 }
 
+/** Owner-without-token only for a direct local connection. A tunnel (cloudflared, tailscale serve, a reverse
+ *  proxy) also connects from 127.0.0.1 but announces the real client in a forwarding header → not loopback. */
 function isLoopback(req) {
   const ip = req.socket.remoteAddress || '';
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  const local = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  const forwarded = req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.headers['tailscale-user-login'];
+  return local && !forwarded;
 }

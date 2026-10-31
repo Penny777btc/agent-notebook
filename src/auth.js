@@ -96,6 +96,39 @@ export class Auth {
     return { name: t.name, scopes: t.scopes, folders: t.folders, kind: 'token' };
   }
 
+  // ---- owner password (phone / remote access to the web UI) ---------------------------------
+  hasPassword() { return !!this.config.owner?.hash; }
+
+  setPassword(password) {
+    if (password && String(password).length < 6) throw new AuthError('密码至少 6 位', 400);
+    this.update((cfg) => {
+      if (!password) { delete cfg.owner; return; }
+      const salt = crypto.randomBytes(16).toString('hex');
+      cfg.owner = { salt, hash: crypto.scryptSync(String(password), salt, 32).toString('hex'), set: new Date().toISOString() };
+    });
+    return this.hasPassword();
+  }
+
+  verifyPassword(password) {
+    const o = this.config.owner;
+    if (!o?.hash || !password) return false;
+    const h = crypto.scryptSync(String(password), o.salt, 32);
+    const want = Buffer.from(o.hash, 'hex');
+    return h.length === want.length && crypto.timingSafeEqual(h, want);
+  }
+
+  /** Password login from a phone / browser: mints a full-access device token the owner can revoke in 设置. */
+  login(password, { device = 'phone' } = {}) {
+    if (!this.verifyPassword(password)) throw new AuthError('密码不对', 401);
+    const base = String(device || 'phone').replace(/[^\w.-]+/g, '-').slice(0, 20) || 'phone';
+    let name = `${base}-${new Date().toISOString().slice(0, 10)}`;
+    let n = 2;
+    while (this.config.tokens.some((t) => t.name === name)) name = `${base}-${new Date().toISOString().slice(0, 10)}-${n++}`;
+    const t = this.createToken(name, { scopes: ['read', 'write', 'admin'], folders: ['*'] });
+    this.update((cfg) => { const x = cfg.tokens.find((y) => y.name === name); if (x) x.device = true; });
+    return t;
+  }
+
   /** The human owner using the local web UI. */
   owner() {
     return { name: 'owner', scopes: ['read', 'write', 'admin'], folders: ['*'], kind: 'owner' };

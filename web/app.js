@@ -21,12 +21,50 @@ const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'c
 const KIND_LABEL = { board: '看板', journal: '日志', pages: '页面集' };
 const encPath = (p) => p.split('/').map(encodeURIComponent).join('/');
 
+const TOKEN_KEY = 'nb_token';
+const authToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 async function api(method, url, body) {
-  const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const headers = body ? { 'Content-Type': 'application/json' } : {};
+  const tok = authToken();
+  if (tok) headers.Authorization = 'Bearer ' + tok;
+  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && !url.startsWith('/api/login')) { showLogin(); throw new Error(data.error || '需要登录'); }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
+
+// ---------------------------------------------------------------- phone / remote login
+let loginShown = false;
+async function showLogin() {
+  if (loginShown) return;
+  loginShown = true;
+  if (authToken()) { try { localStorage.removeItem(TOKEN_KEY); } catch {} }
+  const access = await fetch('/api/access').then((r) => r.json()).catch(() => ({}));
+  const overlay = el('div', { class: 'login' });
+  const pw = el('input', { type: 'password', placeholder: '访问密码', autocomplete: 'current-password', style: 'width:100%;height:44px;font-size:16px;border-radius:12px;padding:0 14px' });
+  const msg = el('div', { class: 'muted', style: 'font-size:13px;min-height:18px' });
+  const go = async () => {
+    if (!pw.value) { pw.focus(); return; }
+    msg.textContent = '登录中…';
+    try {
+      const device = /iPhone|iPad/.test(navigator.userAgent) ? 'iphone' : /Android/.test(navigator.userAgent) ? 'android' : 'browser';
+      const r = await api('POST', '/api/login', { password: pw.value, device });
+      localStorage.setItem(TOKEN_KEY, r.token);
+      location.reload();
+    } catch (err) { msg.textContent = err.message; msg.className = 'err'; pw.select(); }
+  };
+  pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  overlay.append(el('div', { class: 'login-box' },
+    el('div', { style: 'font-size:44px;line-height:1' }, '📓'),
+    el('h1', { style: 'font-size:24px;font-weight:700;letter-spacing:-.02em;margin:10px 0 4px' }, 'Agent Notebook'),
+    access.passwordSet
+      ? [el('p', { class: 'muted', style: 'margin:0 0 18px;font-size:14px' }, '输入在 Mac 上设置的访问密码'), pw, el('button', { class: 'btn primary', style: 'width:100%;height:44px;font-size:16px;border-radius:12px;margin-top:12px', onclick: go }, '登录'), el('div', { style: 'margin-top:10px' }, msg)]
+      : el('p', { class: 'muted', style: 'font-size:14px;line-height:1.6' }, '这台笔记本还没有设置访问密码。请先在 Mac 上打开 Agent Notebook，到 设置 → 手机访问 里设置一个，再回来登录。')));
+  document.body.append(overlay);
+  setTimeout(() => pw.focus(), 50);
+}
+function logout() { try { localStorage.removeItem(TOKEN_KEY); } catch {} location.reload(); }
 const get = (u) => api('GET', u);
 const notePath = (p) => '/api/notes/' + encPath(p);
 
@@ -137,6 +175,7 @@ async function route() {
 }
 function topbar(crumbs, ...actions) {
   const bar = el('div', { class: 'topbar' });
+  bar.append(el('button', { class: 'icon-btn menu-btn', title: '菜单', onclick: () => document.body.classList.toggle('drawer-open') }, '☰'));
   const c = el('div', { class: 'crumb' });
   crumbs.forEach((x, i) => { if (i) c.append(el('span', { class: 'muted' }, '/')); c.append(x.href ? el('a', { href: x.href }, x.label) : el('span', {}, x.label)); });
   bar.append(c, el('div', { class: 'spacer' }), ...actions);
@@ -735,13 +774,34 @@ async function viewSettings(main) {
   const page = el('div', { class: 'page settings' });
   page.append(el('h1', { class: 'page-title' }, '设置'), el('p', {}, `笔记库位置：${status.vault}`));
 
+  // phone / remote access
+  const acc = await get('/api/access/settings');
+  page.append(el('h2', {}, '手机访问'), el('p', {}, '在手机浏览器里打开这台 Mac 上的服务，用访问密码登录后就能用（可「添加到主屏幕」当 app 用）。每次登录生成一个设备令牌，列在下面的令牌表里，随时可撤销。'));
+  const pw1 = el('input', { type: 'password', placeholder: acc.passwordSet ? '输入新密码可更换' : '至少 6 位', autocomplete: 'new-password' });
+  const lanChk = el('input', { type: 'checkbox', checked: !!acc.lan });
+  const accMsg = el('div', { class: 'muted', style: 'font-size:13px' });
+  const saveAccess = async (body) => { try { const r = await api('POST', '/api/access/settings', body); toast('已保存'); pw1.value = ''; route(); return r; } catch (err) { toast(err.message, true); } };
+  const steps = el('div', { class: 'kv', style: 'margin-top:14px;grid-template-columns:150px 1fr' },
+    el('div', { class: 'k' }, '访问密码'), el('div', {}, acc.passwordSet ? el('span', { class: 'ok' }, `已设置（${fmtTime(acc.passwordSetAt).slice(0, 16)}）`) : el('span', { class: 'err' }, '未设置 — 手机无法登录')),
+    el('div', { class: 'k' }, '同一 Wi-Fi'), el('div', {}, acc.lan ? [acc.boundLan ? el('span', { class: 'ok' }, '已开启。') : el('span', { class: 'err' }, '已开启，重启服务后生效。'), el('div', { style: 'margin-top:4px' }, '手机浏览器打开：', acc.lanUrls.map((u) => el('a', { href: u, target: '_blank', style: 'color:var(--accent-text);margin-right:10px;font-family:var(--mono);font-size:13px' }, u)))] : el('span', { class: 'muted' }, '未开启（服务只监听 127.0.0.1）')),
+    el('div', { class: 'k' }, '不在同一网络'), el('div', { style: 'font-size:13px;line-height:1.7' },
+      el('div', {}, '任选一种隧道，把本机 3777 端口安全地带到手机上：'),
+      el('div', {}, el('b', {}, 'Tailscale'), '（推荐，私有网络，手机装 Tailscale 登录同一账号）：'), el('div', { class: 'code' }, `tailscale serve --bg ${acc.port}`),
+      el('div', {}, el('b', {}, 'Cloudflare Tunnel'), '（临时公网地址，每次运行都会变）：'), el('div', { class: 'code' }, `cloudflared tunnel --url http://127.0.0.1:${acc.port}`),
+      el('div', { class: 'muted' }, '隧道过来的请求一律要密码登录；只有本机直连不需要。')));
+  page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
+    el('label', {}, acc.passwordSet ? '更换密码' : '设置密码'), el('div', { class: 'row' }, pw1, el('button', { class: 'btn primary', onclick: () => { if (pw1.value.length < 6) { toast('密码至少 6 位', true); return; } saveAccess({ password: pw1.value }); } }, acc.passwordSet ? '更换' : '设置'), acc.passwordSet && el('button', { class: 'btn danger', onclick: () => { if (confirm('清除访问密码？已登录的手机不受影响，可在令牌表里撤销。')) saveAccess({ clearPassword: true }); } }, '清除')),
+    el('label', {}, '局域网访问'), el('div', { class: 'row' }, el('label', {}, lanChk, ' 允许同一 Wi-Fi 的设备连接（监听 0.0.0.0，需重启服务）'), el('button', { class: 'btn small', onclick: () => saveAccess({ lan: lanChk.checked }) }, '保存')),
+    status.principal?.kind === 'token' && el('label', {}, '本设备'), status.principal?.kind === 'token' && el('div', { class: 'row' }, el('span', { class: 'muted', style: 'font-size:13px' }, `以设备令牌「${status.principal.name}」登录`), el('button', { class: 'btn small', onclick: logout }, '退出登录'))),
+    steps, accMsg));
+
   page.append(el('h2', {}, 'Agent 访问令牌'), el('p', {}, el('a', { href: '#/agents', style: 'color:var(--accent)' }, '接入 Agent 页'), ' 可以自动检测并一键接入本机 agent。这里管理已有令牌：read 只能读取，write 可以记录 / 修改，admin 可以管理令牌和备份。'));
   const tokBox = el('div', { class: 'card-box' });
   if (tokens.length) {
     const t = el('table', { style: 'width:100%;font-size:14px;border-collapse:collapse' });
     t.append(el('thead', {}, el('tr', {}, ...['名称', '前缀', '权限', '文件夹', '最近使用', ''].map((h) => el('th', {}, h)))));
     for (const tk of tokens) {
-      t.append(el('tr', {}, el('td', { style: 'padding:6px;font-weight:500' }, tk.name), el('td', { style: 'padding:6px;font-family:var(--mono);font-size:12px' }, tk.prefix + '…'),
+      t.append(el('tr', {}, el('td', { style: 'padding:6px;font-weight:500' }, tk.device ? '📱 ' : '', tk.name), el('td', { style: 'padding:6px;font-family:var(--mono);font-size:12px' }, tk.prefix + '…'),
         el('td', { style: 'padding:6px' }, tk.scopes.map((s) => el('span', { class: 'chip status' }, s))), el('td', { style: 'padding:6px' }, tk.folders.map((f) => el('span', { class: 'chip' }, f === '*' ? '全部' : f))),
         el('td', { style: 'padding:6px;font-size:12px;color:var(--text-3)' }, tk.lastUsed ? fmtTime(tk.lastUsed) : '从未'),
         el('td', { style: 'padding:6px;text-align:right' }, el('button', { class: 'btn small danger', onclick: async () => { if (!confirm(`撤销「${tk.name}」？`)) return; await api('DELETE', `/api/tokens/${encodeURIComponent(tk.name)}`); route(); } }, '撤销'))));
@@ -1120,8 +1180,9 @@ $('#search').addEventListener('focus', (e) => { e.target.blur(); searchDialog();
 $('#collapse').onclick = () => $('#sidebar').classList.add('collapsed');
 $('#expand').onclick = () => $('#sidebar').classList.remove('collapsed');
 document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchDialog(); } });
-window.addEventListener('hashchange', () => { closePeek(); route(); });
-loadSidebar().then(route);
+window.addEventListener('hashchange', () => { closePeek(); document.body.classList.remove('drawer-open'); route(); });
+document.addEventListener('click', (e) => { if (document.body.classList.contains('drawer-open') && !e.target.closest('#sidebar') && !e.target.closest('.menu-btn')) document.body.classList.remove('drawer-open'); });
+loadSidebar().then(route).catch(() => {}); // a 401 here already opened the login screen
 setInterval(async () => { // light auto-refresh so agent writes show up while you read
   if (document.hidden || !$('#peek').classList.contains('hidden') || !$('#modal').classList.contains('hidden')) return;
   if (document.activeElement && document.activeElement !== document.body) return;
