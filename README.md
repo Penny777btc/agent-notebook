@@ -17,6 +17,7 @@ A **local-first notebook shared by you and all your AI agents**.
 - **Agents call one tool**: `notebook_capture { text }`. The router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`).
 - **Links**: write `[[Page title]]` anywhere; it resolves by title across notebooks, renders as a link, and the target shows **backlinks**.
 - **Reading**: the home page is a quick-capture box, the inbox, and *today's feed* grouped by notebook; each notebook has kanban / timeline / table views.
+- **Graph**: **关系图** draws every note as a node and every `[[link]]` as an edge — coloured by notebook (legend doubles as a filter), sized by link count, hover to see neighbours, click to open, drag / zoom / pan, optional orphan notes; a note's page links to the graph centred on it. `GET /api/graph` returns nodes, edges and unresolved link names.
 - **Charts**: numbers an agent passes in `properties` (`{ amount: 35 }`, `{ weight: 71.5 }`) — or that you type as `[amount:: 35]` / `weight:: 71.5` — are kept per entry as Obsidian/Dataview inline fields and plotted per day in the notebook's **图表** view (sum / average / latest, 7 / 30 / 90 days / all, hover for the entries, click to open the day). `notebook_metrics` gives agents the same series.
 
 ## Quick start
@@ -158,6 +159,6 @@ Or in the UI under **设置 → 备份**. Interval defaults to 30 minutes. Pushi
 
 ## Roadmap ideas
 
-Block-level editor, backlinks graph, per-column WIP limits, webhooks (notify Slack when an agent adds a card), MCP resources for `notebook://` URIs, OAuth for remote agents, Tauri/Electron shell.
+Block-level editor, per-column WIP limits, webhooks (notify Slack when an agent adds a card), MCP resources for `notebook://` URIs, OAuth for remote agents, Tauri/Electron shell.
 
 MIT.

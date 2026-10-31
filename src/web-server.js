@@ -80,6 +80,12 @@ export function createApp({ vault, auth, backup }) {
     res.json({ ...d, groups: d.groups.filter((g) => auth.can(req.principal, 'read', g.notebook.folder)) });
   });
   api.get('/links/index', guard('read'), (req, res) => res.json(Object.fromEntries(vault.titleIndex())));
+  api.get('/graph', guard('read'), (req, res) => {
+    const g = vault.graph();
+    const nodes = g.nodes.filter((n) => auth.can(req.principal, 'read', n.path));
+    const ok = new Set(nodes.map((n) => n.path));
+    res.json({ ...g, nodes, edges: g.edges.filter((e) => ok.has(e.source) && ok.has(e.target)) });
+  });
   api.post('/capture', guard('write', (r) => r.body.notebook || ''), (req, res) => {
     const r = capture(vault, router, { ...req.body, source: req.body.source || req.principal.name });
     auth.audit(req.principal, 'capture', r.path, { via: 'web', mode: r.mode, notebook: r.notebook.folder });

@@ -402,6 +402,36 @@ export class Vault {
     return out;
   }
 
+  /** Every note as a node and every resolved [[link]] as an edge — the relation graph. */
+  graph() {
+    const idx = this.titleIndex();
+    const nbCache = new Map();
+    const nbOf = (folder) => { if (!nbCache.has(folder)) nbCache.set(folder, this.notebookOf(folder)?.folder || null); return nbCache.get(folder); };
+    const nodes = [];
+    const edges = [];
+    const seenEdge = new Set();
+    const unresolved = new Map();
+    const degree = new Map();
+    for (const n of this.listNotes({ limit: 10000 })) {
+      nodes.push({ path: n.path, title: n.title, folder: n.folder, notebook: nbOf(n.folder), date: n.date, source: n.source, tags: n.tags });
+      const body = this.getNote(n.path).body;
+      for (const m of body.matchAll(WIKILINK_RE)) {
+        const name = m[1].trim();
+        const target = this.resolveLink(name, idx);
+        if (!target) { unresolved.set(name, (unresolved.get(name) || 0) + 1); continue; }
+        if (target === n.path) continue;
+        const key = `${n.path}\u0000${target}`;
+        if (seenEdge.has(key)) continue;
+        seenEdge.add(key);
+        edges.push({ source: n.path, target });
+        degree.set(n.path, (degree.get(n.path) || 0) + 1);
+        degree.set(target, (degree.get(target) || 0) + 1);
+      }
+    }
+    for (const node of nodes) node.degree = degree.get(node.path) || 0;
+    return { nodes, edges, unresolved: [...unresolved.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count) };
+  }
+
   /** getNote + resolved links + backlinks (used by read endpoints, not by listings). */
   getNoteFull(rel) {
     const note = this.getNote(rel);

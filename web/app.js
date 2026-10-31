@@ -119,7 +119,7 @@ async function route() {
   const r = parseHash();
   if (r.kind === 'board') { location.replace(nbHref(r.arg)); return; }
   state.route = r;
-  state.routeKey = ['settings', 'activity', 'agents'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
+  state.routeKey = ['settings', 'activity', 'agents', 'graph'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
   markActive();
   const main = $('#main'); main.innerHTML = '';
   try {
@@ -129,6 +129,7 @@ async function route() {
     else if (r.kind === 'settings') await viewSettings(main);
     else if (r.kind === 'activity') await viewActivity(main);
     else if (r.kind === 'agents') await viewAgents(main);
+    else if (r.kind === 'graph') await viewGraph(main, r.arg);
     else await viewHome(main);
   } catch (err) {
     main.append(el('div', { class: 'page' }, el('h1', { class: 'page-title' }, '出错了'), el('p', { class: 'err' }, err.message)));
@@ -612,6 +613,7 @@ async function noteEditor(note, { onSaved } = {}) {
     const links = (note.links || []);
     const back = (note.backlinks || []);
     if (!links.length && !back.length) { linksBox.append(el('div', { class: 'muted' }, '在正文里写 [[页面标题]] 可以链接到其他笔记。')); return; }
+    linksBox.append(el('a', { href: `#/graph/${encodeURIComponent(note.path)}`, style: 'float:right;font-size:12px', onclick: closePeek }, '🕸 在关系图中查看'));
     if (links.length) linksBox.append(el('h4', {}, '链接到'), el('div', {}, links.map((l) => l.path ? el('a', { href: `#/note/${encodeURIComponent(l.path)}` }, '→ ' + l.label) : el('span', { class: 'muted', style: 'margin-right:8px' }, '→ ' + l.label + '（未创建）'))));
     if (back.length) linksBox.append(el('h4', {}, `被引用 · ${back.length}`), el('div', {}, back.map((b) => el('a', { href: `#/note/${encodeURIComponent(b.path)}` }, `← ${b.title}`, el('span', { class: 'muted' }, nbOf(b.folder) ? `  ${nbOf(b.folder).icon}` : '')))));
   };
@@ -868,6 +870,204 @@ function agentCard(a) {
   }
   card.append(actions, result);
   return card;
+}
+
+// ---------------------------------------------------------------- relation graph ([[links]])
+// fixed-order categorical palette (light / dark steps), one slot per notebook in sidebar order; the 9th+ share gray
+const PALETTE = { light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'], dark: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'] };
+const isDark = () => window.matchMedia('(prefers-color-scheme: dark)').matches;
+function notebookColor(folder) {
+  const pal = PALETTE[isDark() ? 'dark' : 'light'];
+  const i = state.notebooks.findIndex((n) => n.folder === folder);
+  return i >= 0 && i < pal.length ? pal[i] : (isDark() ? '#8a8a85' : '#9b9a94');
+}
+
+async function viewGraph(main, focus) {
+  const data = await get('/api/graph');
+  const page = el('div', { class: 'page wide', style: 'padding-bottom:16px' });
+  const hiddenKey = 'graph:hidden';
+  const hidden = new Set(JSON.parse(localStorage.getItem(hiddenKey) || '[]'));
+  let showOrphans = localStorage.getItem('graph:orphans') === '1';
+  let query = '';
+  const focusPath = focus || ''; // parseHash already decoded it
+
+  page.append(el('div', { style: 'display:flex;align-items:baseline;gap:12px' }, el('h1', { class: 'page-title', style: 'font-size:28px;margin:0' }, '关系图'),
+    el('span', { class: 'muted', style: 'font-size:13px' }, `${data.nodes.length} 篇笔记 · ${data.edges.length} 条链接${data.unresolved.length ? ` · ${data.unresolved.length} 个未创建的链接` : ''}`)));
+
+  // legend = filter
+  const groups = new Map();
+  for (const n of data.nodes) { const k = n.notebook || ''; groups.set(k, (groups.get(k) || 0) + 1); }
+  const legend = el('div', { class: 'legend' });
+  const drawLegend = () => {
+    legend.innerHTML = '';
+    const order = [...state.notebooks.map((n) => n.folder).filter((f) => groups.has(f)), ...(groups.has('') ? [''] : [])];
+    for (const f of order) {
+      const nb = nbOf(f);
+      legend.append(el('button', { class: 'legend-chip' + (hidden.has(f) ? ' off' : ''), onclick: () => { hidden.has(f) ? hidden.delete(f) : hidden.add(f); localStorage.setItem(hiddenKey, JSON.stringify([...hidden])); drawLegend(); rebuild(); } },
+        el('span', { class: 'sw', style: `background:${notebookColor(f)}` }), nb ? `${nb.icon} ${nb.title}` : '📄 笔记本之外', el('span', { class: 'muted' }, groups.get(f))));
+    }
+  };
+  drawLegend();
+  const search = el('input', { type: 'search', placeholder: '高亮标题包含…', style: 'border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:13px;background:var(--bg);width:170px' });
+  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); paint(); });
+  const orphanBtn = el('button', { class: 'btn small' + (showOrphans ? ' active' : ''), onclick: () => { showOrphans = !showOrphans; localStorage.setItem('graph:orphans', showOrphans ? '1' : '0'); orphanBtn.classList.toggle('active', showOrphans); rebuild(); } }, '显示未链接的笔记');
+  page.append(el('div', { class: 'toolbar', style: 'border:none;padding-bottom:6px;margin-bottom:6px' }, legend, el('div', { class: 'spacer' }), search, orphanBtn, el('button', { class: 'btn small', onclick: () => { userView = false; rebuild(true); } }, '↻ 重新布局')));
+
+  const wrap = el('div', { class: 'graph-wrap' });
+  const tipEl = el('div', { class: 'chart-tip hidden', style: 'top:auto' });
+  const hint = el('div', { class: 'graph-hint muted' }, '拖动节点 · 滚轮缩放 · 拖动空白平移 · 点击打开笔记');
+  page.append(wrap);
+  main.append(topbar([{ label: '关系图' }]), page);
+  if (!data.edges.length) { wrap.append(el('div', { class: 'empty', style: 'padding:40px;text-align:center;font-size:14px' }, '还没有任何 [[链接]]。在正文里写 [[页面标题]] 把笔记连起来，这里就会长出一张图。')); return; }
+
+  // ---- simulation state ----
+  const svgRoot = svg('svg', { class: 'graph' });
+  const root = svg('g');
+  const edgeLayer = svg('g', { class: 'gl' });
+  const nodeLayer = svg('g', { class: 'gnodes' });
+  root.append(edgeLayer, nodeLayer);
+  svgRoot.append(root);
+  wrap.append(svgRoot, tipEl, hint);
+  let nodes = [], edges = [], byPath = new Map(), neighbors = new Map();
+  let view = { x: 0, y: 0, k: 1 };
+  let alpha = 0, raf = null, hover = null;
+  const W = () => wrap.clientWidth || 800, H = () => wrap.clientHeight || 600;
+  const fitHeight = () => { wrap.style.height = Math.max(360, window.innerHeight - wrap.getBoundingClientRect().top - 14) + 'px'; }; // fill the viewport, never scroll
+  const applyView = () => root.setAttribute('transform', `translate(${view.x} ${view.y}) scale(${view.k})`);
+
+  function rebuild(reshuffle = false) {
+    fitHeight();
+    const prev = byPath;
+    const visible = data.nodes.filter((n) => !hidden.has(n.notebook || '') && (showOrphans || n.degree > 0 || n.path === focusPath));
+    const ok = new Set(visible.map((n) => n.path));
+    edges = data.edges.filter((e) => ok.has(e.source) && ok.has(e.target));
+    const deg = new Map();
+    for (const e of edges) { deg.set(e.source, (deg.get(e.source) || 0) + 1); deg.set(e.target, (deg.get(e.target) || 0) + 1); }
+    const w = W(), h = H(), R = Math.min(w, h) * 0.38;
+    const nbIndex = new Map(state.notebooks.map((n, i) => [n.folder, i]));
+    nodes = visible.map((n) => {
+      const old = !reshuffle && prev.get(n.path);
+      const ang = ((nbIndex.get(n.notebook) ?? state.notebooks.length) / (state.notebooks.length + 1)) * Math.PI * 2;
+      return { ...n, deg: deg.get(n.path) || 0, x: old ? old.x : w / 2 + Math.cos(ang) * R * (0.5 + Math.random() * 0.5) + (Math.random() - 0.5) * 40, y: old ? old.y : h / 2 + Math.sin(ang) * R * (0.5 + Math.random() * 0.5) + (Math.random() - 0.5) * 40, vx: 0, vy: 0, r: 4 + Math.min(10, Math.sqrt(deg.get(n.path) || 0) * 2.2) };
+    });
+    byPath = new Map(nodes.map((n) => [n.path, n]));
+    neighbors = new Map();
+    for (const e of edges) { (neighbors.get(e.source) || neighbors.set(e.source, new Set()).get(e.source)).add(e.target); (neighbors.get(e.target) || neighbors.set(e.target, new Set()).get(e.target)).add(e.source); }
+    // (re)create elements
+    edgeLayer.innerHTML = ''; nodeLayer.innerHTML = '';
+    for (const e of edges) { e.el = svg('line'); edgeLayer.append(e.el); }
+    for (const n of nodes) {
+      n.el = svg('g', { class: 'gn' + (n.path === focusPath ? ' focus' : '') });
+      n.circle = svg('circle', { r: n.r, fill: notebookColor(n.notebook) });
+      n.label = svg('text', { y: n.r + 11, 'text-anchor': 'middle' }, n.title.length > 18 ? n.title.slice(0, 17) + '…' : n.title);
+      n.el.append(svg('circle', { r: n.r + 9, class: 'hitarea' }), n.circle, n.label); // hit target larger than the mark
+      attachNode(n);
+      nodeLayer.append(n.el);
+    }
+    alpha = 1;
+    for (let i = 0; i < 400 && alpha > 0.02; i++) step(); // settle synchronously: the page opens on a finished picture
+    alpha = 0; render(); if (focusPath && byPath.has(focusPath)) { focused = true; centerOn(focusPath); } else fitView();
+    paint();
+  }
+
+  function step() {
+    const w = W(), h = H();
+    const k = Math.min(170, Math.sqrt((w * h) / Math.max(1, nodes.length)) * 0.8); // ideal edge length (Fruchterman–Reingold)
+    for (const n of nodes) { n.vx = 0; n.vy = 0; }
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let d = Math.sqrt(dx * dx + dy * dy);
+        if (d < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d = 1; }
+        if ((!a.deg || !b.deg) && d > k) continue; // orphans only avoid collisions; global repulsion would push them out of the picture
+        const f = Math.min(k * 2, (k * k) / d) / d; // repulsion k²/d, capped for near-coincident nodes
+        a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+      }
+    }
+    for (const e of edges) {
+      const a = byPath.get(e.source), b = byPath.get(e.target);
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const f = (d * d) / k / d; // attraction d²/k
+      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+    }
+    const t = 24 * alpha + 0.3; // temperature: max step per tick
+    for (const n of nodes) {
+      if (n.fixed) continue;
+      const g = n.deg ? 0.08 : 0.6; // gentle gravity so components stay together; orphans (no springs) are held much closer
+      n.vx += (w / 2 - n.x) * g; n.vy += (h / 2 - n.y) * g;
+      const len = Math.sqrt(n.vx * n.vx + n.vy * n.vy) || 1;
+      const step = Math.min(len, t) / len;
+      n.x = Math.max(-w, Math.min(2 * w, n.x + n.vx * step)); n.y = Math.max(-h, Math.min(2 * h, n.y + n.vy * step));
+    }
+    alpha *= 0.98;
+  }
+  function tick() {
+    step();
+    render();
+    if (alpha > 0.02) raf = requestAnimationFrame(tick); else { raf = null; alpha = 0; if (focusPath && !focused) { focused = true; centerOn(focusPath); } else if (!userView) fitView(); }
+  }
+  let userView = false; // once the user pans / zooms we stop auto-fitting
+  function fitView() {
+    if (!nodes.length) return;
+    const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y);
+    const minX = Math.min(...xs) - 50, maxX = Math.max(...xs) + 50, minY = Math.min(...ys) - 30, maxY = Math.max(...ys) + 50;
+    const k = Math.min(1.4, Math.max(0.3, Math.min(W() / (maxX - minX), H() / (maxY - minY))));
+    view = { k, x: W() / 2 - ((minX + maxX) / 2) * k, y: H() / 2 - ((minY + maxY) / 2) * k };
+    applyView(); paint();
+  }
+  let focused = false;
+  const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+  function render() {
+    for (const e of edges) { const a = byPath.get(e.source), b = byPath.get(e.target); e.el.setAttribute('x1', a.x); e.el.setAttribute('y1', a.y); e.el.setAttribute('x2', b.x); e.el.setAttribute('y2', b.y); }
+    for (const n of nodes) n.el.setAttribute('transform', `translate(${n.x} ${n.y})`);
+  }
+  function centerOn(path) {
+    const n = byPath.get(path); if (!n) return;
+    view.k = Math.max(view.k, 1.2); view.x = W() / 2 - n.x * view.k; view.y = H() / 2 - n.y * view.k; applyView(); paint();
+  }
+  /** classes: dim / hit / labels, depending on hover, search, zoom */
+  function paint() {
+    const many = nodes.length > 90;
+    const hl = hover ? new Set([hover.path, ...(neighbors.get(hover.path) || [])]) : null;
+    for (const n of nodes) {
+      const match = query && n.title.toLowerCase().includes(query);
+      const dimmed = (hl && !hl.has(n.path)) || (query && !match);
+      n.el.classList.toggle('dim', !!dimmed);
+      n.el.classList.toggle('hit', !!match);
+      n.label.classList.toggle('hidden', dimmed || (many && n.deg < 2 && !(hl && hl.has(n.path)) && view.k < 1.6 && n.path !== focusPath));
+    }
+    for (const e of edges) e.el.classList.toggle('dim', !!(hl && !(e.source === hover.path || e.target === hover.path)) || !!(query && !(byPath.get(e.source).el.classList.contains('hit') || byPath.get(e.target).el.classList.contains('hit'))));
+  }
+
+  // ---- interaction ----
+  function attachNode(n) {
+    let start = null, moved = false;
+    n.el.addEventListener('pointerdown', (e) => { e.stopPropagation(); start = { x: e.clientX, y: e.clientY, nx: n.x, ny: n.y }; moved = false; n.fixed = true; n.el.setPointerCapture(e.pointerId); });
+    n.el.addEventListener('pointermove', (e) => { if (!start) return; const dx = (e.clientX - start.x) / view.k, dy = (e.clientY - start.y) / view.k; if (Math.abs(dx) + Math.abs(dy) > 2) moved = true; n.x = start.nx + dx; n.y = start.ny + dy; alpha = Math.max(alpha, 0.3); kick(); });
+    n.el.addEventListener('pointerup', (e) => { if (!start) return; start = null; n.fixed = false; if (!moved) openPeek(n.path); });
+    n.el.addEventListener('pointerenter', (e) => {
+      hover = n; paint();
+      tipEl.innerHTML = ''; tipEl.append(el('div', { class: 'tv', style: 'font-size:13px' }, n.title), el('div', { class: 'td' }, `${nbOf(n.notebook)?.title || n.folder || '/'} · ${n.deg} 条链接${n.date ? ' · ' + n.date : ''}${n.source ? ' · ' + n.source : ''}`));
+      tipEl.classList.remove('hidden'); moveTip(e);
+    });
+    n.el.addEventListener('pointermove', moveTip);
+    n.el.addEventListener('pointerleave', () => { hover = null; paint(); tipEl.classList.add('hidden'); });
+  }
+  function moveTip(e) { const r = wrap.getBoundingClientRect(); const x = e.clientX - r.left, y = e.clientY - r.top; tipEl.style.left = (x > r.width - 240 ? x - tipEl.offsetWidth - 14 : x + 14) + 'px'; tipEl.style.top = Math.max(4, y - 10) + 'px'; }
+  let pan = null;
+  svgRoot.addEventListener('pointerdown', (e) => { pan = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; svgRoot.setPointerCapture(e.pointerId); });
+  svgRoot.addEventListener('pointermove', (e) => { if (!pan) return; userView = true; view.x = pan.vx + (e.clientX - pan.x); view.y = pan.vy + (e.clientY - pan.y); applyView(); });
+  svgRoot.addEventListener('pointerup', () => { pan = null; });
+  svgRoot.addEventListener('wheel', (e) => {
+    e.preventDefault(); userView = true;
+    const r = wrap.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const k = Math.min(4, Math.max(0.3, view.k * (e.deltaY < 0 ? 1.1 : 0.9)));
+    view.x = mx - (mx - view.x) * (k / view.k); view.y = my - (my - view.y) * (k / view.k); view.k = k; applyView(); paint();
+  }, { passive: false });
+  if (window.ResizeObserver) new ResizeObserver(() => { if (nodes.length && !raf && !userView) fitView(); }).observe(wrap); // resizing only re-fits, never re-runs the layout
+  rebuild(); // the page is already in the DOM, so sizes are known; no rAF (background tabs may never fire it)
 }
 
 // ---------------------------------------------------------------- activity
