@@ -40,6 +40,30 @@ export class Router {
     return r;
   }
 
+  /** Every learned rule as a flat list the owner can review: [{ type, key, folder, count? }]. */
+  listRules() {
+    const r = this.rules();
+    const out = [];
+    for (const [key, folder] of Object.entries(r.keywords)) out.push({ type: 'keyword', key, folder });
+    for (const [key, folder] of Object.entries(r.tags)) out.push({ type: 'tag', key, folder });
+    for (const [key, counts] of Object.entries(r.sources)) for (const [folder, count] of Object.entries(counts)) out.push({ type: 'source', key, folder, count });
+    return out;
+  }
+
+  /** Delete one learned rule (type: keyword | tag | source; `folder` only needed for source). Returns what is left. */
+  forget({ type, key, folder } = {}) {
+    const r = this.rules();
+    if (type === 'keyword') delete r.keywords[key];
+    else if (type === 'tag') delete r.tags[key];
+    else if (type === 'source') {
+      if (folder && r.sources[key]) { delete r.sources[key][folder]; if (!Object.keys(r.sources[key]).length) delete r.sources[key]; }
+      else delete r.sources[key];
+    } else if (type === 'all') { r.keywords = {}; r.tags = {}; r.sources = {}; }
+    else throw Object.assign(new Error('type must be keyword, tag, source or all'), { status: 400 });
+    this.saveRules(r);
+    return this.listRules();
+  }
+
   /** Score every notebook for a piece of text. Returns {decision, candidates}. */
   classify({ text = '', title = '', tags = [], source } = {}) {
     const hay = `${title}\n${text}`.toLowerCase();
@@ -80,6 +104,66 @@ export function keywordsOf(title) {
   for (const m of String(title).matchAll(CJK_RUN)) out.add(m[0]);
   for (const m of String(title).matchAll(LATIN_WORD)) out.add(m[0].toLowerCase());
   return [...out].slice(0, 6);
+}
+
+// ---- related notes --------------------------------------------------------------------------
+const CJK_STOP = new Set(['笔记', '记录', '今天', '昨天', '明天', '一下', '一个', '一些', '关于', '什么', '怎么', '可以', '我们', '你们', '他们', '这个', '那个', '这些', '已经', '还是', '以及', '然后', '因为', '所以', '如果', '但是', '没有', '不是', '就是', '需要', '进行', '问题', '时候', '现在', '继续', '开始', '完成', '内容', '东西', '一点', '比较', '非常', '觉得', '感觉']);
+const LATIN_STOP = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'are', 'was', 'you', 'not', 'but', 'has', 'have', 'into', 'about']);
+
+/** Title → set of comparable tokens: latin words (≥3 chars) and CJK character bigrams, minus stop words. */
+export function titleTokens(title) {
+  const out = new Set();
+  const t = String(title || '').toLowerCase();
+  for (const m of t.matchAll(/[a-z0-9][a-z0-9+#.-]{2,}/g)) if (!LATIN_STOP.has(m[0])) out.add(m[0]);
+  for (const m of t.matchAll(/[一-鿿]+/g)) {
+    const run = m[0];
+    if (run.length === 1) continue;
+    for (let i = 0; i + 1 < run.length; i++) { const bg = run.slice(i, i + 2); if (!CJK_STOP.has(bg)) out.add(bg); }
+  }
+  return out;
+}
+
+/**
+ * Notes an agent may want to [[link]] or append to instead of creating a near-duplicate.
+ * Scores every note by shared title tokens, shared tags, whether the new text mentions the note's
+ * title, and recency inside the same notebook; returns the best few with the reasons.
+ */
+export function findRelated(vault, { title = '', text = '', tags = [], folder = '', excludePath = null, limit = 5, since = 7 } = {}) {
+  const qTokens = titleTokens(title);
+  const qTags = new Set((tags || []).map((t) => String(t).toLowerCase()));
+  const lowText = String(text || '').toLowerCase();
+  const lowTitle = String(title || '').toLowerCase().trim();
+  const recent = new Date(Date.now() - since * 86400000).toISOString();
+  const out = [];
+  for (const n of vault.listNotes({ limit: 10000 })) {
+    if (n.path === excludePath) continue;
+    let score = 0;
+    const reasons = [];
+    const nTitle = String(n.title || '').toLowerCase();
+    const isDay = /^\d{4}-\d{2}-\d{2}$/.test(nTitle);
+    if (!isDay) {
+      if (lowTitle && nTitle && (nTitle === lowTitle)) { score += 8; reasons.push('标题相同'); }
+      else if (lowTitle && nTitle && (nTitle.includes(lowTitle) || lowTitle.includes(nTitle)) && Math.min(nTitle.length, lowTitle.length) >= 4) { score += 5; reasons.push('标题包含'); }
+      else {
+        const nt = titleTokens(n.title);
+        const shared = [...qTokens].filter((tok) => nt.has(tok));
+        const latin = shared.filter((tok) => /^[a-z0-9]/.test(tok));
+        const cjk = shared.length - latin.length;
+        const titleScore = latin.length * 3 + Math.min(4, cjk);
+        if (titleScore >= 2) { score += titleScore; reasons.push(`标题词「${shared.slice(0, 3).join('」「')}」`); }
+      }
+      if (lowText && nTitle.length >= 2 && lowText.includes(nTitle)) { score += 4; reasons.push('正文提到它'); }
+    }
+    const sharedTags = (n.tags || []).filter((t) => qTags.has(String(t).toLowerCase()));
+    if (sharedTags.length) { score += Math.min(4, sharedTags.length * 2); reasons.push(`标签 #${sharedTags.slice(0, 2).join(' #')}`); }
+    if (folder && n.folder === folder) {
+      if (score > 0) { score += 1; reasons.push('同一笔记本'); }
+      else if (String(n.updated || '') >= recent && !isDay) { score += 1; reasons.push('同一笔记本 · 最近'); }
+    }
+    if (score >= 2) out.push({ path: n.path, title: n.title, folder: n.folder, score, reasons, updated: n.updated });
+  }
+  out.sort((a, b) => b.score - a.score || String(b.updated || '').localeCompare(String(a.updated || '')));
+  return out.slice(0, limit);
 }
 
 export function ensureInbox(vault) {
@@ -145,8 +229,7 @@ export function capture(vault, router, { text, title, notebook, tags = [], sourc
 
   const idx = vault.titleIndex();
   const links = vault.extractLinks(text, idx);
-  const related = vault.search(title, { limit: 6 }).filter((n) => n.path !== note.path).slice(0, 5)
-    .map((n) => ({ path: n.path, title: n.title, folder: n.folder }));
+  const related = findRelated(vault, { title, text, tags, folder, excludePath: note.path });
 
   return {
     path: note.path,

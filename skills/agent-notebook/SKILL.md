@@ -22,7 +22,7 @@ notebook_capture { text: "<what to keep, Markdown ok>", title?: "<short headline
   - **journal** (健康, 财务 …): appended to today's page as a timestamped entry.
   - **board** (Alpha看板, 选题会 …): becomes a card in the first column.
   - **pages** (阅读, 思维 …): becomes its own page.
-- The result includes `related` (existing notes with similar titles). If one is clearly the same topic, call `notebook_update_note` with `append` on it instead of leaving a near-duplicate, or add a `[[link]]`.
+- The result includes `related`: existing notes ranked by shared title words, shared tags, titles your text mentions, and recency in the same notebook, each with `score` and `reasons`. A high score with 标题相同 / 标题包含 usually means the same topic: call `notebook_update_note` with `append` on it instead of leaving a near-duplicate, or add a `[[link]]` to it in your text.
 
 ## Linking (Obsidian-style)
 

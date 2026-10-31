@@ -765,6 +765,31 @@ async function viewSettings(main) {
       } catch (err) { toast(err.message, true); }
     } }, '创建令牌'))), out));
 
+  // learned routing rules
+  const rules = await get('/api/rules');
+  page.append(el('h2', {}, '归类规则'), el('p', {}, '你在收件箱里分配内容、或移动笔记时，系统学到的规则。关键词和标签直接决定归类；来源偏好是某个 agent 常记到哪里的统计（3 次以上才生效）。删掉就忘记。各笔记本自带的关键词在笔记本的「⚙ 设置」里改。'));
+  const rulesBox = el('div', { class: 'card-box' });
+  const forget = async (r) => { try { await api('POST', '/api/rules/forget', { type: r.type, key: r.key, folder: r.folder }); toast('已忘记'); route(); } catch (err) { toast(err.message, true); } };
+  const ruleTable = (title, list, keyLabel, keyRender) => {
+    if (!list.length) return;
+    rulesBox.append(el('div', { style: 'font-weight:600;font-size:13px;margin:4px 0 6px' }, `${title} · ${list.length}`));
+    const t = el('table', { style: 'width:100%;font-size:14px;border-collapse:collapse;margin-bottom:14px' });
+    t.append(el('thead', {}, el('tr', {}, ...[keyLabel, '归入', ''].map((h) => el('th', { style: 'text-align:left;color:var(--text-3);font-weight:500;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--border-2)' }, h)))));
+    for (const r of list) {
+      const nb = nbOf(r.folder);
+      t.append(el('tr', {}, el('td', { style: 'padding:5px 6px' }, keyRender(r)),
+        el('td', { style: 'padding:5px 6px' }, nb ? el('a', { href: nbHref(r.folder) }, `${nb.icon} ${nb.title}`) : el('span', { class: 'muted' }, `${r.folder}（已不存在）`), r.count ? el('span', { class: 'muted', style: 'font-size:12px;margin-left:6px' }, `${r.count} 次`) : ''),
+        el('td', { style: 'padding:5px 6px;text-align:right' }, el('button', { class: 'btn small danger', onclick: () => forget(r) }, '忘记'))));
+    }
+    rulesBox.append(t);
+  };
+  ruleTable('关键词', rules.filter((r) => r.type === 'keyword'), '标题里出现', (r) => el('span', { class: 'chip' }, r.key));
+  ruleTable('标签', rules.filter((r) => r.type === 'tag'), '标签', (r) => el('span', { class: 'chip' }, '#' + r.key));
+  ruleTable('来源偏好', rules.filter((r) => r.type === 'source'), 'Agent', (r) => chipSource(r.key));
+  if (!rules.length) rulesBox.append(el('div', { class: 'empty' }, '还没有学到任何规则。在首页收件箱里点一次「归入」就会有。'));
+  else rulesBox.append(el('div', { style: 'text-align:right' }, el('button', { class: 'btn small', onclick: () => { if (confirm('忘记全部学到的规则？笔记本自带的关键词不受影响。')) forget({ type: 'all' }); } }, '全部忘记')));
+  page.append(rulesBox);
+
   const bk = status.backup;
   page.append(el('h2', {}, '备份'), el('p', {}, '把整个笔记库作为 git 仓库定期 commit，并 push 到 GitHub（或任何 git 远端）。未开启时所有内容只保存在本地。'));
   const remote = el('input', { type: 'url', value: bk.remote || '', placeholder: 'https://github.com/you/my-notes.git（先在 GitHub 新建一个空仓库）' });

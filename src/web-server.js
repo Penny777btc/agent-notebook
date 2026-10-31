@@ -100,6 +100,13 @@ export function createApp({ vault, auth, backup }) {
     res.json(moved);
   });
   api.get('/classify', guard('read'), (req, res) => res.json(router.classify({ text: req.query.text || '', title: req.query.title || '' })));
+  // learned routing rules: review and forget (owner / admin only)
+  api.get('/rules', guard('admin'), (req, res) => res.json(router.listRules()));
+  api.post('/rules/forget', guard('admin'), (req, res) => {
+    const left = router.forget(req.body || {});
+    auth.audit(req.principal, 'forget_rule', `${req.body?.type}:${req.body?.key || ''}`, { via: 'web', folder: req.body?.folder });
+    res.json(left);
+  });
   api.get('/boards', guard('read'), (req, res) => res.json(vault.listBoards()));
   api.post('/boards', guard('write', (r) => r.body.folder), (req, res) => {
     const b = vault.createBoard(req.body);

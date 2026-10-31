@@ -14,7 +14,7 @@ A **local-first notebook shared by you and all your AI agents**.
   - `journal` — one page per day, entries appended with a timestamp (健康, 财务)
   - `board` — kanban cards with columns (Alpha看板, 选题会)
   - `pages` — one page per note (阅读, 思维)
-- **Agents call one tool**: `notebook_capture { text }`. The router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`).
+- **Agents call one tool**: `notebook_capture { text }`. The router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`); **设置 → 归类规则** lists every learned keyword / tag / source rule and lets you forget one (or all). The capture result's `related` ranks existing notes by shared title words, shared tags, titles mentioned in the new text and recency in the same notebook, each with the reasons.
 - **Links**: write `[[Page title]]` anywhere; it resolves by title across notebooks, renders as a link, and the target shows **backlinks**.
 - **Reading**: the home page is a quick-capture box, the inbox, and *today's feed* grouped by notebook; each notebook has kanban / timeline / table views.
 - **Graph**: **关系图** draws every note as a node and every `[[link]]` as an edge — coloured by notebook (legend doubles as a filter), sized by link count, hover to see neighbours, click to open, drag / zoom / pan, optional orphan notes; a note's page links to the graph centred on it. `GET /api/graph` returns nodes, edges and unresolved link names.
