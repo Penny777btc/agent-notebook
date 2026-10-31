@@ -167,3 +167,38 @@ button { cursor: pointer; }
 
 .banner { display: flex; align-items: center; gap: 12px; margin: 0 0 20px; }
 .banner:hover { background: var(--bg-hover); }
+
+/* notebooks / feed / links */
+.side-item .badge { margin-left: auto; background: var(--accent); color: #fff; border-radius: 10px; font-size: 11px; padding: 0 6px; line-height: 16px; }
+.capture { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 0 0 18px; background: var(--bg-card); }
+.capture textarea { border: none; outline: none; resize: vertical; min-height: 44px; background: transparent; font: inherit; font-size: 15px; }
+.capture .row { display: flex; align-items: center; gap: 8px; }
+.capture select { border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; background: var(--bg); font-size: 13px; }
+.feed-group { margin: 0 0 22px; }
+.feed-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; margin: 0 0 8px; }
+.feed-head a:hover { text-decoration: underline; }
+.feed-head .n { color: var(--text-3); font-weight: 400; font-size: 13px; }
+.feed-item { display: flex; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; align-items: flex-start; }
+.feed-item:hover { background: var(--bg-hover); }
+.feed-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-top: 9px; flex: none; }
+.feed-item .t { font-weight: 500; }
+.feed-item .ex { color: var(--text-3); font-size: 13px; }
+.feed-item .meta { margin-left: auto; display: flex; gap: 4px; align-items: center; flex: none; font-size: 11px; color: var(--text-3); }
+.journal-day { border: 1px solid var(--border-2); border-radius: 10px; padding: 14px 18px; margin: 0 0 14px; background: var(--bg-card); }
+.journal-day .md h2 { font-size: 14px; color: var(--text-2); margin: 14px 0 4px; font-weight: 600; }
+.journal-day .md h2 small { font-weight: 400; color: var(--text-3); font-size: 11px; margin-left: 6px; }
+.journal-day .md h2:first-child { margin-top: 0; }
+.inbox-item { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border: 1px solid var(--border-2); border-radius: 8px; margin-bottom: 8px; background: var(--bg-card); }
+.inbox-item .t { font-weight: 500; cursor: pointer; }
+.inbox-item .ex { color: var(--text-3); font-size: 12px; width: 100%; }
+.inbox-item .assign { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; width: 100%; }
+.chip.btn-chip { cursor: pointer; border: 1px solid var(--border); background: var(--bg); }
+.chip.btn-chip:hover { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+.wikilink { color: var(--accent); text-decoration: none !important; border-bottom: 1px dashed var(--accent); }
+.wikilink.missing { color: var(--text-3); border-bottom-color: var(--text-3); }
+.links-box { margin-top: 28px; border-top: 1px solid var(--border-2); padding-top: 12px; font-size: 13px; }
+.links-box h4 { margin: 8px 0 6px; font-size: 12px; color: var(--text-3); text-transform: uppercase; letter-spacing: .02em; }
+.links-box a { display: inline-block; margin: 0 8px 6px 0; color: var(--accent); }
+.timeline-date { font-size: 13px; font-weight: 600; color: var(--text-2); margin: 18px 0 6px; position: sticky; top: 44px; background: var(--bg); padding: 4px 0; }
+.date-nav { display: inline-flex; align-items: center; gap: 4px; }
+.list th.sortable { cursor: pointer; } .list th.sortable:hover { color: var(--text); }

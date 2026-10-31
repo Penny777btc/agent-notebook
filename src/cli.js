@@ -126,12 +126,25 @@ async function main() {
   }
 }
 
+export const DEFAULT_NOTEBOOKS = [
+  { folder: '收件箱', title: '收件箱', icon: '📥', kind: 'pages', inbox: true, order: 0, description: '自动归类拿不准的内容先放这里。点一下分配到正确的笔记本，系统会记住这类内容该去哪。' },
+  { folder: '健康', title: '健康', icon: '💪', kind: 'journal', order: 10, keywords: ['健康', '睡眠', '运动', '体重', '饮食', '跑步', '健身', '血压', '心率', '步数', '锻炼', '体检', 'sleep', 'workout', 'health'], description: '身体与习惯：睡眠、运动、饮食、体重、体检、心情。按天记录。' },
+  { folder: '阅读', title: '阅读', icon: '📚', kind: 'pages', order: 20, keywords: ['阅读', '读书', '书', '文章', '论文', '笔记', '摘录', '作者', '章节', 'book', 'article', 'paper', 'reading'], description: '读过的书、文章、论文：摘录、感想、要点。一篇内容一页。' },
+  { folder: '思维', title: '思维', icon: '🧠', kind: 'pages', order: 30, keywords: ['思考', '想法', '灵感', '洞察', '框架', '模型', '原则', '反思', '复盘', '决策', 'idea', 'insight', 'thinking', 'framework'], description: '想法、洞察、思维模型、反思与复盘。一个想法一页，用 [[链接]] 串起来。' },
+  { folder: '财务', title: '财务', icon: '💰', kind: 'journal', order: 40, keywords: ['财务', '花费', '支出', '收入', '预算', '账单', '投资', '仓位', '资产', '理财', '记账', '元', '美元', 'usdt', 'budget', 'expense', 'income', 'portfolio'], description: '收支、预算、资产与仓位变动。按天记录，金额放在 amount 属性里。' },
+  { folder: 'Alpha看板', title: 'Alpha 看板', icon: '📈', kind: 'board', order: 50, columns: ['新发现', '关注中', '已验证', '归档'], keywords: ['alpha', '链上', '代币', '交易量', '资金费率', '永续', 'defi', 'meme', '空投', '协议', '叙事', 'ticker', 'onchain', 'token'], description: 'Agent 每天收集的 Alpha 线索：链上、代币、协议、叙事。按日期筛选可以看当天的看板。' },
+  { folder: '选题会', title: '选题会', icon: '🎬', kind: 'board', order: 60, columns: ['灵感池', '讨论中', '已定稿', '已发布'], keywords: ['选题', '视频', '文章', '标题', '切入点', '脚本', '内容', '发布', '推文', 'topic', 'video', 'script', 'content'], description: '内容选题流水线：agent 投稿到灵感池，我在这里挑选和定稿。' }
+];
+
+/** Create the default notebooks; upgrade legacy boards in place (adds kind/keywords, keeps notes). */
 export function seedVault(vault) {
-  if (!vault.isBoard('Alpha看板')) {
-    vault.createBoard({ folder: 'Alpha看板', title: 'Alpha 看板', icon: '📈', columns: ['新发现', '关注中', '已验证', '归档'], description: 'Agent 每天收集的 Alpha 线索。按日期筛选可以看当天的看板。' });
-  }
-  if (!vault.isBoard('选题会')) {
-    vault.createBoard({ folder: '选题会', title: '选题会', icon: '🎬', columns: ['灵感池', '讨论中', '已定稿', '已发布'], description: '内容选题流水线：agent 投稿到灵感池，我在这里挑选和定稿。' });
+  for (const nb of DEFAULT_NOTEBOOKS) {
+    if (vault.isNotebook(nb.folder)) {
+      const cur = vault.getNotebookMeta(nb.folder);
+      if (!cur.keywords.length) vault.updateNotebook(nb.folder, { keywords: nb.keywords || [], kind: cur.kind, order: nb.order, inbox: nb.inbox });
+    } else {
+      vault.createNotebook(nb);
+    }
   }
   fs.mkdirSync(vault.resolve('灵感'), { recursive: true });
   if (!fs.existsSync(vault.resolve('欢迎.md'))) {
@@ -146,8 +159,10 @@ AI agent 通过 **MCP** 接入，经过 token 认证后按权限读写。
 
 ## 它是怎么组织的
 
-- **页面**：任意文件夹里的 \`.md\` 文件，frontmatter 存属性（标签、来源 agent、日期…）。
-- **看板**：带 \`_board.md\` 的文件夹。文件夹里的每个笔记就是一张卡片，\`status\` 属性决定它在哪一列。
+- **笔记本**：顶层每个文件夹是一个领域（健康、阅读、思维、财务、Alpha看板、选题会…），各带一份说明和关键词，agent 记东西时据此自动归类。
+- 三种形态：**日志**（健康、财务：一天一页，按时间追加）、**看板**（卡片 + 列）、**页面集**（一条内容一页）。
+- **收件箱**：归类拿不准的先放这里，你点一下分配，系统就记住。
+- **链接**：正文里写 \`[[页面标题]]\` 就能跨笔记本互相链接，页面底部显示"被谁引用"。
 - **活动日志**：左下角可以看到每个 agent 做了什么。
 
 ## 让 agent 接入

@@ -12,9 +12,14 @@ const el = (tag, attrs = {}, ...children) => {
   return n;
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const today = () => new Date().toISOString().slice(0, 10);
+const localDate = (d = new Date()) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const today = () => localDate();
+const shiftDate = (iso, days) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + days); return localDate(d); };
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '';
-const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'date', 'created', 'updated'];
+const fmtClock = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
+const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries'];
+const KIND_LABEL = { board: '看板', journal: '日志', pages: '页面集' };
+const encPath = (p) => p.split('/').map(encodeURIComponent).join('/');
 
 async function api(method, url, body) {
   const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -23,40 +28,64 @@ async function api(method, url, body) {
   return data;
 }
 const get = (u) => api('GET', u);
-const notePath = (p) => '/api/notes/' + p.split('/').map(encodeURIComponent).join('/');
+const notePath = (p) => '/api/notes/' + encPath(p);
 
 let toastTimer;
 function toast(msg, isErr = false) {
   const t = $('#toast');
   t.textContent = msg; t.classList.remove('hidden'); t.style.background = isErr ? 'var(--danger)' : '';
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 2200);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 2600);
 }
 
+// ---------------------------------------------------------------- markdown + [[wikilinks]]
+function linkify(md) {
+  return String(md || '').replace(/\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]/g, (m, name, label) => {
+    const target = state.linkIndex[name.trim().toLowerCase()];
+    const text = esc((label || name).trim());
+    return target
+      ? `<a class="wikilink" href="#/note/${encodeURIComponent(target)}" title="${esc(target)}">${text}</a>`
+      : `<a class="wikilink missing" href="#" data-missing="${esc(name.trim())}" title="还没有这一页">${text}</a>`;
+  });
+}
 function renderMd(md) {
-  const html = marked.parse(md || '', { gfm: true, breaks: true });
+  const html = marked.parse(linkify(md), { gfm: true, breaks: true });
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script,iframe,object,embed,style').forEach((n) => n.remove());
   doc.querySelectorAll('*').forEach((n) => { for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (a.name === 'href' && /^javascript:/i.test(a.value))) n.removeAttribute(a.name); });
-  doc.querySelectorAll('a[href]').forEach((a) => { a.target = '_blank'; a.rel = 'noopener'; });
+  doc.querySelectorAll('a[href^="http"]').forEach((a) => { a.target = '_blank'; a.rel = 'noopener'; });
   return doc.body.innerHTML;
 }
+document.addEventListener('click', async (e) => {
+  const a = e.target.closest('a.wikilink.missing');
+  if (!a) return;
+  e.preventDefault();
+  const name = a.dataset.missing;
+  if (!confirm(`还没有「${name}」这一页，现在创建？`)) return;
+  const n = await api('POST', '/api/notes', { folder: state.notebooks.find((x) => x.kind === 'pages' && !x.inbox)?.folder || '', title: name, body: '' });
+  await loadSidebar(); location.hash = `#/note/${encodeURIComponent(n.path)}`;
+});
 
 // ---------------------------------------------------------------- state
-const state = { boards: [], tree: [], route: null, openFolders: new Set(JSON.parse(localStorage.getItem('openFolders') || '[]')) };
+const state = { notebooks: [], tree: [], linkIndex: {}, route: null, routeKey: '', openFolders: new Set(JSON.parse(localStorage.getItem('openFolders') || '[]')), feedDate: today() };
 
 async function loadSidebar() {
-  [state.boards, state.tree] = await Promise.all([get('/api/boards'), get('/api/tree')]);
+  [state.notebooks, state.tree, state.linkIndex] = await Promise.all([get('/api/notebooks'), get('/api/tree'), get('/api/links/index')]);
   renderSidebar();
 }
+const nbOf = (folder) => state.notebooks.find((n) => n.folder === folder);
+const nbHref = (folder) => `#/nb/${encodeURIComponent(folder)}`;
 
 function renderSidebar() {
-  const bl = $('#board-list'); bl.innerHTML = '';
-  for (const b of state.boards) {
-    bl.append(el('a', { class: 'side-item', href: `#/board/${encodeURIComponent(b.folder)}`, 'data-route': `board:${b.folder}` }, el('span', { class: 'emoji' }, b.icon), b.title));
+  const list = $('#notebook-list'); list.innerHTML = '';
+  for (const nb of state.notebooks) {
+    list.append(el('a', { class: 'side-item', href: nbHref(nb.folder), 'data-route': `nb:${nb.folder}` },
+      el('span', { class: 'emoji' }, nb.icon), nb.title,
+      nb.inbox && nb.count ? el('span', { class: 'badge' }, nb.count) : el('span', { class: 'count' }, nb.count || '')));
   }
-  if (!state.boards.length) bl.append(el('div', { class: 'empty' }, '还没有看板'));
   const tree = $('#tree'); tree.innerHTML = '';
-  tree.append(renderTree(state.tree));
+  const rest = state.tree.filter((it) => !(it.type === 'folder' && it.isNotebook));
+  tree.append(renderTree(rest));
+  if (!rest.length) tree.append(el('div', { class: 'empty' }, '没有笔记本之外的页面'));
   markActive();
 }
 
@@ -65,9 +94,9 @@ function renderTree(items) {
   for (const it of items) {
     if (it.type === 'folder') {
       const wrap = el('div', { class: 'tree-folder' + (state.openFolders.has(it.path) ? ' open' : '') });
-      const row = el('a', { class: 'side-item', href: it.isBoard ? `#/board/${encodeURIComponent(it.path)}` : `#/folder/${encodeURIComponent(it.path)}`, 'data-route': (it.isBoard ? 'board:' : 'folder:') + it.path },
+      const row = el('a', { class: 'side-item', href: it.isNotebook ? nbHref(it.path) : `#/folder/${encodeURIComponent(it.path)}`, 'data-route': (it.isNotebook ? 'nb:' : 'folder:') + it.path },
         el('span', { class: 'caret', onclick: (e) => { e.preventDefault(); e.stopPropagation(); wrap.classList.toggle('open'); wrap.classList.contains('open') ? state.openFolders.add(it.path) : state.openFolders.delete(it.path); localStorage.setItem('openFolders', JSON.stringify([...state.openFolders])); } }, '▶'),
-        el('span', { class: 'emoji' }, it.isBoard ? '📋' : '📁'), it.name,
+        el('span', { class: 'emoji' }, it.isNotebook ? it.notebook.icon : '📁'), it.name,
         el('span', { class: 'count' }, countNotes(it)));
       wrap.append(row, el('div', { class: 'tree-children' }, renderTree(it.children)));
       frag.append(wrap);
@@ -78,28 +107,23 @@ function renderTree(items) {
   return frag;
 }
 const countNotes = (f) => f.children.reduce((n, c) => n + (c.type === 'note' ? 1 : countNotes(c)), 0);
-
-function markActive() {
-  document.querySelectorAll('.side-item').forEach((a) => a.classList.toggle('active', a.dataset.route === state.routeKey));
-}
+function markActive() { document.querySelectorAll('.side-item').forEach((a) => a.classList.toggle('active', a.dataset.route === state.routeKey)); }
 
 // ---------------------------------------------------------------- routing
 function parseHash() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   const [kind, ...restParts] = h.split('/');
-  const rest = restParts.join('/');
-  return { kind: kind || 'home', arg: rest };
+  return { kind: kind || 'home', arg: restParts.join('/') };
 }
-
 async function route() {
   const r = parseHash();
+  if (r.kind === 'board') { location.replace(nbHref(r.arg)); return; }
   state.route = r;
-  state.routeKey = r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
-  if (r.kind === 'settings' || r.kind === 'activity' || r.kind === 'agents') state.routeKey = r.kind;
+  state.routeKey = ['settings', 'activity', 'agents'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
   markActive();
   const main = $('#main'); main.innerHTML = '';
   try {
-    if (r.kind === 'board') await viewBoard(main, r.arg);
+    if (r.kind === 'nb') await viewNotebook(main, r.arg);
     else if (r.kind === 'note') await viewNote(main, r.arg);
     else if (r.kind === 'folder') await viewFolder(main, r.arg);
     else if (r.kind === 'settings') await viewSettings(main);
@@ -110,7 +134,6 @@ async function route() {
     main.append(el('div', { class: 'page' }, el('h1', { class: 'page-title' }, '出错了'), el('p', { class: 'err' }, err.message)));
   }
 }
-
 function topbar(crumbs, ...actions) {
   const bar = el('div', { class: 'topbar' });
   const c = el('div', { class: 'crumb' });
@@ -118,121 +141,225 @@ function topbar(crumbs, ...actions) {
   bar.append(c, el('div', { class: 'spacer' }), ...actions);
   return bar;
 }
+const chipSource = (s) => s && el('span', { class: 'chip source' }, s);
 
-// ---------------------------------------------------------------- home
+// ---------------------------------------------------------------- home: capture + inbox + today's feed
+function captureBox({ notebook } = {}) {
+  const ta = el('textarea', { placeholder: notebook ? `记一条到「${nbOf(notebook)?.title}」…` : '记点什么… 会自动归到对应的笔记本（支持 Markdown 和 [[链接]]）', rows: 2 });
+  const sel = el('select', {}, el('option', { value: '' }, '自动归类'), state.notebooks.filter((n) => !n.inbox).map((n) => el('option', { value: n.folder, selected: n.folder === notebook }, `${n.icon} ${n.title}`)));
+  const status = el('span', { class: 'muted', style: 'font-size:12px' });
+  const send = async () => {
+    const text = ta.value.trim(); if (!text) return;
+    try {
+      const r = await api('POST', '/api/capture', { text, notebook: sel.value || undefined, source: 'owner' });
+      ta.value = ''; status.textContent = r.hint;
+      toast(r.mode === 'inbox' ? '归类拿不准，已放入收件箱' : `已记入 ${r.notebook.icon} ${r.notebook.title}`);
+      await loadSidebar(); route();
+    } catch (err) { toast(err.message, true); }
+  };
+  ta.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') send(); });
+  return el('div', { class: 'capture' }, ta, el('div', { class: 'row' }, sel, status, el('div', { style: 'flex:1' }), el('span', { class: 'muted', style: 'font-size:12px' }, '⌘↵'), el('button', { class: 'btn small primary', onclick: send }, '记录')));
+}
+
+function assignChips(note, { onDone } = {}) {
+  const wrap = el('div', { class: 'assign' }, el('span', { class: 'muted', style: 'font-size:12px' }, '归入：'));
+  const move = async (folder) => {
+    try { await api('POST', '/api/move', { path: note.path, folder, learn: true }); toast(`已归入 ${nbOf(folder)?.icon || ''} ${nbOf(folder)?.title || folder}，并记住了`); onDone ? onDone() : (await loadSidebar(), route()); }
+    catch (err) { toast(err.message, true); }
+  };
+  const suggested = (note.suggested || []).filter((f) => nbOf(f));
+  for (const f of suggested) wrap.append(el('span', { class: 'chip btn-chip', onclick: () => move(f) }, `${nbOf(f).icon} ${nbOf(f).title}`));
+  const sel = el('select', { onchange: (e) => e.target.value && move(e.target.value) }, el('option', { value: '' }, suggested.length ? '其他…' : '选择笔记本…'),
+    state.notebooks.filter((n) => !n.inbox && !suggested.includes(n.folder)).map((n) => el('option', { value: n.folder }, `${n.icon} ${n.title}`)));
+  wrap.append(sel);
+  return wrap;
+}
+
 async function viewHome(main) {
-  const status = await get('/api/status');
-  const recent = await get('/api/notes?limit=12');
   const page = el('div', { class: 'page' });
-  page.append(el('div', { class: 'page-icon' }, '📓'), el('h1', { class: 'page-title' }, 'Agent Notebook'),
-    el('p', { class: 'page-desc' }, `本地笔记库：${status.vault}`));
-  const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin:16px 0 28px' });
-  for (const b of state.boards) {
-    grid.append(el('a', { class: 'card-box', href: `#/board/${encodeURIComponent(b.folder)}`, style: 'margin:0' },
-      el('div', { style: 'font-size:28px' }, b.icon), el('div', { style: 'font-weight:600;margin:6px 0 2px' }, b.title),
-      el('div', { class: 'muted', style: 'font-size:13px' }, b.description || b.columns.join(' · '))));
-  }
-  grid.append(el('a', { class: 'card-box', href: '#', style: 'margin:0;color:var(--text-3)', onclick: (e) => { e.preventDefault(); newBoardDialog(); } }, el('div', { style: 'font-size:28px' }, '＋'), el('div', { style: 'font-weight:600;margin:6px 0 2px' }, '新建看板')));
+  page.append(el('h1', { class: 'page-title', style: 'font-size:32px' }, '今天'));
+  page.append(captureBox());
+
+  // agents banner
   try {
     const ag = await get('/api/agents');
-    const todo = ag.agents.filter((a) => a.detected && !a.connected);
-    const done = ag.agents.filter((a) => a.connected);
-    page.append(el('a', { class: 'card-box banner', href: '#/agents' },
-      el('span', { style: 'font-size:22px' }, '🔌'),
-      el('div', {}, el('div', { style: 'font-weight:600' }, todo.length ? `检测到 ${todo.length} 个本地 agent 可以接入` : (done.length ? `已接入 ${done.length} 个 agent` : '接入你的 AI agent')),
-        el('div', { class: 'muted', style: 'font-size:13px' }, todo.length ? todo.map((a) => a.name).join(' · ') + '  —  点一下即可一键接入' : '查看接入状态或添加其他 agent')),
-      el('span', { class: 'muted', style: 'margin-left:auto' }, '→')));
+    const todo = ag.agents.filter((a) => a.detected && !a.connected && a.canWrite);
+    if (todo.length) page.append(el('a', { class: 'card-box banner', href: '#/agents' }, el('span', { style: 'font-size:22px' }, '🔌'),
+      el('div', {}, el('div', { style: 'font-weight:600' }, `检测到 ${todo.length} 个本地 agent 还没接入`), el('div', { class: 'muted', style: 'font-size:13px' }, todo.map((a) => a.name).join(' · '))), el('span', { class: 'muted', style: 'margin-left:auto' }, '→')));
   } catch {}
-  page.append(el('h2', { style: 'font-size:16px;margin:0 0 8px' }, '看板'), grid);
-  page.append(el('h2', { style: 'font-size:16px;margin:0 0 8px' }, '最近更新'), noteTable(recent));
-  const bk = status.backup;
-  page.append(el('p', { class: 'muted', style: 'font-size:13px;margin-top:24px' },
-    bk.isRepo ? `备份：${bk.enabled ? `每 ${bk.intervalMinutes} 分钟自动` : '手动'} · ${bk.remote || '仅本地 git'} · ${bk.dirty ? `${bk.dirty} 个文件待提交` : '已全部提交'}` : '备份：未开启，内容仅保存在本地。到 设置 中配置 GitHub 备份。'));
-  main.append(topbar([{ label: '首页' }]), page);
-}
 
-function noteTable(notes, { showFolder = true } = {}) {
-  if (!notes.length) return el('div', { class: 'empty' }, '暂无内容');
-  const t = el('table');
-  t.append(el('thead', {}, el('tr', {}, el('th', {}, '标题'), showFolder && el('th', {}, '位置'), el('th', {}, '状态'), el('th', {}, '标签'), el('th', {}, '来源'), el('th', {}, '更新'))));
-  const tb = el('tbody');
-  for (const n of notes) {
-    tb.append(el('tr', { onclick: () => openPeek(n.path) },
-      el('td', {}, el('div', { style: 'font-weight:500' }, n.title), el('div', { class: 'muted', style: 'font-size:12px' }, n.excerpt.slice(0, 90))),
-      showFolder && el('td', { class: 'muted' }, n.folder || '/'),
-      el('td', {}, n.status && el('span', { class: 'chip status' }, n.status)),
-      el('td', {}, n.tags.map((x) => el('span', { class: 'chip' }, x))),
-      el('td', {}, n.source && el('span', { class: 'chip source' }, n.source)),
-      el('td', { class: 'muted', style: 'white-space:nowrap;font-size:12px' }, fmtTime(n.updated))));
+  // inbox
+  const inbox = state.notebooks.find((n) => n.inbox);
+  if (inbox && inbox.count) {
+    const items = await get(`/api/notes?folder=${encodeURIComponent(inbox.folder)}&recursive=false&limit=50`);
+    page.append(el('div', { class: 'feed-head' }, el('span', {}, inbox.icon), el('a', { href: nbHref(inbox.folder) }, '收件箱'), el('span', { class: 'n' }, `${items.length} 条待归类`)));
+    for (const n of items) {
+      page.append(el('div', { class: 'inbox-item' },
+        el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtClock(n.created)),
+        n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, n.excerpt.slice(0, 140)),
+        assignChips(n)));
+    }
   }
-  t.append(tb);
-  return el('div', { class: 'list' }, t);
+
+  // today's feed with date nav
+  const d = state.feedDate;
+  const nav = el('div', { class: 'date-nav' },
+    el('button', { class: 'btn small', onclick: () => { state.feedDate = shiftDate(d, -1); route(); } }, '‹'),
+    el('span', { style: 'min-width:150px;text-align:center;font-weight:500' }, d === today() ? `今天 ${d}` : d === shiftDate(today(), -1) ? `昨天 ${d}` : d),
+    el('button', { class: 'btn small', disabled: d >= today(), onclick: () => { state.feedDate = shiftDate(d, 1); route(); } }, '›'),
+    d !== today() && el('button', { class: 'btn small', onclick: () => { state.feedDate = today(); route(); } }, '回到今天'));
+  const feed = await get(`/api/today?date=${d}`);
+  page.append(el('div', { class: 'toolbar', style: 'margin-top:8px' }, nav, el('div', { class: 'spacer' }), el('span', { class: 'muted', style: 'font-size:13px' }, feed.total ? `${feed.total} 条 · 来自 ${feed.sources.join('、') || '—'}` : '')));
+  const groups = feed.groups.filter((g) => !g.notebook.inbox);
+  if (!groups.length) page.append(el('div', { class: 'empty', style: 'padding:24px 0' }, d === today() ? '今天还没有 agent 记录任何内容。在上面记一条，或者让某个 agent 帮你记。' : '这一天没有记录。'));
+  for (const g of groups) page.append(feedGroup(g));
+
+  // notebooks grid
+  page.append(el('h2', { style: 'font-size:16px;margin:28px 0 8px' }, '笔记本'));
+  const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:0 0 20px' });
+  for (const nb of state.notebooks) grid.append(el('a', { class: 'card-box', href: nbHref(nb.folder), style: 'margin:0;padding:12px 14px' },
+    el('div', { style: 'display:flex;align-items:center;gap:8px' }, el('span', { style: 'font-size:22px' }, nb.icon), el('span', { style: 'font-weight:600' }, nb.title), el('span', { class: 'muted', style: 'margin-left:auto;font-size:12px' }, nb.count)),
+    el('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, KIND_LABEL[nb.kind] + (nb.description ? ' · ' + nb.description.slice(0, 40) : ''))));
+  grid.append(el('a', { class: 'card-box', href: '#', style: 'margin:0;padding:12px 14px;color:var(--text-3)', onclick: (e) => { e.preventDefault(); notebookDialog(); } }, el('div', { style: 'font-weight:600' }, '＋ 新建笔记本')));
+  page.append(grid);
+  main.append(topbar([{ label: '今天' }]), page);
 }
 
-// ---------------------------------------------------------------- folder (list view)
+function feedGroup(g) {
+  const nb = g.notebook;
+  const box = el('div', { class: 'feed-group' });
+  box.append(el('div', { class: 'feed-head' }, el('span', {}, nb.icon), el('a', { href: nbHref(nb.folder) }, nb.title), el('span', { class: 'n' }, nb.kind === 'journal' ? `${g.items.reduce((n, i) => n + (i.entries || 1), 0)} 条` : `${g.items.length} 条`)));
+  for (const it of g.items) {
+    if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body) })));
+    else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
+      el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 120))),
+      el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 2).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
+  }
+  return box;
+}
+
+// ---------------------------------------------------------------- tables
+function noteTable(notes, { showFolder = true, extraProps = [] } = {}) {
+  if (!notes.length) return el('div', { class: 'empty' }, '暂无内容');
+  const cols = [
+    { k: 'title', label: '标题', render: (n) => el('td', {}, el('div', { style: 'font-weight:500' }, n.title), el('div', { class: 'muted', style: 'font-size:12px' }, (n.excerpt || '').slice(0, 90))) },
+    showFolder && { k: 'folder', label: '位置', render: (n) => el('td', { class: 'muted' }, nbOf(n.folder)?.title || n.folder || '/') },
+    notes.some((n) => n.status) && { k: 'status', label: '状态', render: (n) => el('td', {}, n.status && el('span', { class: 'chip status' }, n.status)) },
+    { k: 'tags', label: '标签', render: (n) => el('td', {}, n.tags.map((x) => el('span', { class: 'chip' }, x))) },
+    { k: 'source', label: '来源', render: (n) => el('td', {}, chipSource(n.source)) },
+    ...extraProps.map((k) => ({ k: 'p:' + k, label: k, render: (n) => el('td', {}, n.props?.[k] === undefined ? '' : String(n.props[k])) })),
+    { k: 'date', label: '日期', render: (n) => el('td', { class: 'muted', style: 'white-space:nowrap;font-size:12px' }, n.date) },
+    { k: 'updated', label: '更新', render: (n) => el('td', { class: 'muted', style: 'white-space:nowrap;font-size:12px' }, fmtTime(n.updated)) }
+  ].filter(Boolean);
+  let sortKey = 'updated', dir = -1;
+  const wrap = el('div', { class: 'list' });
+  const draw = () => {
+    const sorted = [...notes].sort((a, b) => { const va = sortKey.startsWith('p:') ? a.props?.[sortKey.slice(2)] : a[sortKey]; const vb = sortKey.startsWith('p:') ? b.props?.[sortKey.slice(2)] : b[sortKey]; return (String(va ?? '')).localeCompare(String(vb ?? ''), 'zh', { numeric: true }) * dir; });
+    const t = el('table');
+    t.append(el('thead', {}, el('tr', {}, cols.map((c) => el('th', { class: 'sortable', onclick: () => { if (sortKey === c.k) dir = -dir; else { sortKey = c.k; dir = 1; } draw(); } }, c.label + (sortKey === c.k ? (dir > 0 ? ' ↑' : ' ↓') : ''))))));
+    const tb = el('tbody');
+    for (const n of sorted) tb.append(el('tr', { onclick: () => openPeek(n.path) }, cols.map((c) => c.render(n))));
+    t.append(tb);
+    wrap.innerHTML = ''; wrap.append(t);
+  };
+  draw();
+  return wrap;
+}
+
 async function viewFolder(main, folder) {
   const notes = await get(`/api/notes?folder=${encodeURIComponent(folder)}&recursive=false`);
   const page = el('div', { class: 'page wide' });
   page.append(el('h1', { class: 'page-title' }, '📁 ' + folder.split('/').pop()));
   page.append(el('div', { class: 'toolbar' }, el('span', { class: 'muted' }, `${notes.length} 个页面`), el('div', { class: 'spacer' }),
+    el('button', { class: 'btn small', onclick: () => { if (confirm(`把「${folder}」变成一个笔记本？`)) notebookDialog({ folder }); } }, '设为笔记本'),
     el('button', { class: 'btn small', onclick: () => newNoteDialog({ folder }) }, '＋ 新建页面')));
   page.append(noteTable(notes, { showFolder: false }));
-  main.append(topbar([{ label: '首页', href: '#/' }, { label: folder }]), page);
+  main.append(topbar([{ label: '今天', href: '#/' }, { label: folder }]), page);
 }
 
-// ---------------------------------------------------------------- board
-async function viewBoard(main, folder) {
-  const view = localStorage.getItem('view:' + folder) || 'kanban';
-  const dateFilter = state.boardDate?.[folder] ?? '';
-  const board = await get(`/api/boards/${folder.split('/').map(encodeURIComponent).join('/')}${dateFilter ? `?date=${dateFilter}` : ''}`);
+// ---------------------------------------------------------------- notebook: kanban / timeline / table
+async function viewNotebook(main, folder) {
+  const dateFilter = state.nbDate?.[folder] ?? '';
+  const nb = await get(`/api/notebooks/${encPath(folder)}${dateFilter ? `?date=${dateFilter}` : ''}`);
+  const defaultView = nb.kind === 'board' ? 'kanban' : nb.kind === 'journal' ? 'timeline' : 'table';
+  let view = localStorage.getItem('view:' + folder) || defaultView;
+  if (view === 'kanban' && nb.kind !== 'board') view = defaultView;
   const page = el('div', { class: 'page wide' });
-  page.append(el('div', { class: 'page-icon', style: 'font-size:48px' }, board.icon), el('h1', { class: 'page-title' }, board.title));
-  if (board.description) page.append(el('p', { class: 'page-desc' }, board.description));
+  page.append(el('div', { style: 'display:flex;align-items:center;gap:12px' }, el('div', { class: 'page-icon', style: 'font-size:44px;margin:0' }, nb.icon),
+    el('div', {}, el('h1', { class: 'page-title', style: 'margin:0' }, nb.title), el('div', { class: 'muted', style: 'font-size:13px' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词：' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`))));
+  if (nb.description) page.append(el('p', { class: 'page-desc', style: 'margin-top:8px' }, nb.description));
 
-  const setDate = (d) => { state.boardDate = { ...(state.boardDate || {}), [folder]: d }; route(); };
-  const dateInput = el('input', { type: 'date', value: dateFilter, onchange: (e) => setDate(e.target.value) });
+  const setDate = (d) => { state.nbDate = { ...(state.nbDate || {}), [folder]: d }; route(); };
+  const setView = (v) => { localStorage.setItem('view:' + folder, v); route(); };
   const tb = el('div', { class: 'toolbar' },
-    el('button', { class: 'btn small' + (view === 'kanban' ? ' active' : ''), onclick: () => { localStorage.setItem('view:' + folder, 'kanban'); route(); } }, '▦ 看板'),
-    el('button', { class: 'btn small' + (view === 'list' ? ' active' : ''), onclick: () => { localStorage.setItem('view:' + folder, 'list'); route(); } }, '☰ 列表'),
+    nb.kind === 'board' && el('button', { class: 'btn small' + (view === 'kanban' ? ' active' : ''), onclick: () => setView('kanban') }, '▦ 看板'),
+    el('button', { class: 'btn small' + (view === 'timeline' ? ' active' : ''), onclick: () => setView('timeline') }, '☷ 时间线'),
+    el('button', { class: 'btn small' + (view === 'table' ? ' active' : ''), onclick: () => setView('table') }, '☰ 表格'),
     el('span', { style: 'width:12px' }),
     el('button', { class: 'btn small' + (dateFilter === today() ? ' active' : ''), onclick: () => setDate(dateFilter === today() ? '' : today()) }, '今天'),
-    dateInput,
-    dateFilter && el('button', { class: 'btn small', onclick: () => setDate('') }, '✕ 清除'),
-    el('span', { class: 'muted', style: 'margin-left:8px;font-size:13px' }, `${board.total} 张卡片`),
+    el('input', { type: 'date', value: dateFilter, onchange: (e) => setDate(e.target.value) }),
+    dateFilter && el('button', { class: 'btn small', onclick: () => setDate('') }, '✕'),
     el('div', { class: 'spacer' }),
-    el('button', { class: 'btn small primary', onclick: () => newNoteDialog({ folder, columns: board.columns.map((c) => c.name) }) }, '＋ 新建卡片'));
+    el('button', { class: 'btn small', onclick: () => notebookDialog({ folder, meta: nb }) }, '⚙ 设置'),
+    nb.kind !== 'journal' && el('button', { class: 'btn small', onclick: () => newNoteDialog({ folder, columns: nb.columns || undefined }) }, nb.kind === 'board' ? '＋ 新建卡片' : '＋ 新建页面'));
   page.append(tb);
+  if (!nb.inbox) page.append(captureBox({ notebook: folder }));
 
-  if (view === 'list') {
-    page.append(noteTable(board.columns.flatMap((c) => c.cards), { showFolder: false }));
+  if (nb.inbox) {
+    for (const n of nb.notes) page.append(el('div', { class: 'inbox-item' }, el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtTime(n.created)), n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, n.excerpt.slice(0, 160)), assignChips(n)));
+    if (!nb.notes.length) page.append(el('div', { class: 'empty' }, '收件箱是空的 🎉'));
+  } else if (view === 'kanban') {
+    page.append(await kanban(folder, dateFilter));
+  } else if (view === 'table') {
+    const extra = [...new Set(nb.notes.flatMap((n) => Object.keys(n.props || {})))].slice(0, 6);
+    page.append(noteTable(nb.notes, { showFolder: false, extraProps: extra }));
   } else {
-    const kb = el('div', { class: 'board' });
-    for (const col of board.columns) {
-      const colEl = el('div', { class: 'col', 'data-col': col.name });
-      colEl.append(el('div', { class: 'col-head' }, el('span', { class: 'chip status' }, col.name), el('span', { class: 'count' }, col.cards.length),
-        el('button', { class: 'mini-btn add', title: '在此列新建', onclick: () => newNoteDialog({ folder, columns: board.columns.map((c) => c.name), status: col.name }) }, '＋')));
-      for (const card of col.cards) colEl.append(cardEl(card));
-      if (!col.cards.length) colEl.append(el('div', { class: 'empty' }, '拖动卡片到这里'));
-      colEl.addEventListener('dragover', (e) => { e.preventDefault(); colEl.classList.add('drag-over'); });
-      colEl.addEventListener('dragleave', () => colEl.classList.remove('drag-over'));
-      colEl.addEventListener('drop', async (e) => {
-        e.preventDefault(); colEl.classList.remove('drag-over');
-        const p = e.dataTransfer.getData('text/plain');
-        if (!p) return;
-        try { await api('PATCH', notePath(p), { status: col.name }); toast(`已移动到「${col.name}」`); route(); } catch (err) { toast(err.message, true); }
-      });
-      kb.append(colEl);
-    }
-    page.append(kb);
+    page.append(timeline(nb));
   }
-  main.append(topbar([{ label: '首页', href: '#/' }, { label: board.title }]), page);
+  main.append(topbar([{ label: '今天', href: '#/' }, { label: nb.title }]), page);
 }
 
+function timeline(nb) {
+  const box = el('div');
+  const byDate = new Map();
+  for (const n of nb.notes) { const d = n.date || String(n.updated).slice(0, 10); if (!byDate.has(d)) byDate.set(d, []); byDate.get(d).push(n); }
+  if (!byDate.size) box.append(el('div', { class: 'empty', style: 'padding:24px 0' }, '还没有内容'));
+  for (const [d, items] of [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0]))) {
+    box.append(el('div', { class: 'timeline-date' }, d === today() ? `今天 · ${d}` : d));
+    for (const it of items) {
+      if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body) })));
+      else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
+        el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 140))),
+        el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 3).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
+    }
+  }
+  return box;
+}
+
+async function kanban(folder, dateFilter) {
+  const board = await get(`/api/boards/${encPath(folder)}${dateFilter ? `?date=${dateFilter}` : ''}`);
+  const kb = el('div', { class: 'board' });
+  for (const col of board.columns) {
+    const colEl = el('div', { class: 'col', 'data-col': col.name });
+    colEl.append(el('div', { class: 'col-head' }, el('span', { class: 'chip status' }, col.name), el('span', { class: 'count' }, col.cards.length),
+      el('button', { class: 'mini-btn add', title: '在此列新建', onclick: () => newNoteDialog({ folder, columns: board.columns.map((c) => c.name), status: col.name }) }, '＋')));
+    for (const card of col.cards) colEl.append(cardEl(card));
+    if (!col.cards.length) colEl.append(el('div', { class: 'empty' }, '拖动卡片到这里'));
+    colEl.addEventListener('dragover', (e) => { e.preventDefault(); colEl.classList.add('drag-over'); });
+    colEl.addEventListener('dragleave', () => colEl.classList.remove('drag-over'));
+    colEl.addEventListener('drop', async (e) => {
+      e.preventDefault(); colEl.classList.remove('drag-over');
+      const p = e.dataTransfer.getData('text/plain'); if (!p) return;
+      try { await api('PATCH', notePath(p), { status: col.name }); toast(`已移动到「${col.name}」`); route(); } catch (err) { toast(err.message, true); }
+    });
+    kb.append(colEl);
+  }
+  return kb;
+}
 function cardEl(card) {
   const c = el('div', { class: 'card', draggable: 'true', onclick: () => openPeek(card.path) },
-    el('div', { class: 't' }, card.title),
-    card.excerpt && el('div', { class: 'ex' }, card.excerpt),
-    el('div', { class: 'meta' }, card.tags.slice(0, 4).map((t) => el('span', { class: 'chip' }, t)), card.source && el('span', { class: 'chip source' }, card.source), el('span', { class: 'date' }, card.date)));
+    el('div', { class: 't' }, card.title), card.excerpt && card.excerpt !== card.title && el('div', { class: 'ex' }, card.excerpt),
+    el('div', { class: 'meta' }, card.tags.slice(0, 4).map((t) => el('span', { class: 'chip' }, t)), chipSource(card.source), el('span', { class: 'date' }, card.date)));
   c.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.path); c.classList.add('dragging'); });
   c.addEventListener('dragend', () => c.classList.remove('dragging'));
   return c;
@@ -241,19 +368,24 @@ function cardEl(card) {
 // ---------------------------------------------------------------- note editor (full page & peek)
 async function viewNote(main, path) {
   const note = await get(notePath(path));
-  const crumbs = [{ label: '首页', href: '#/' }];
-  if (note.folder) {
-    const b = state.boards.find((x) => x.folder === note.folder);
-    crumbs.push({ label: b ? b.title : note.folder, href: b ? `#/board/${encodeURIComponent(b.folder)}` : `#/folder/${encodeURIComponent(note.folder)}` });
-  }
+  const crumbs = [{ label: '今天', href: '#/' }];
+  if (note.notebook) crumbs.push({ label: note.notebook.title, href: nbHref(note.notebook.folder) });
+  else if (note.folder) crumbs.push({ label: note.folder, href: `#/folder/${encodeURIComponent(note.folder)}` });
   crumbs.push({ label: note.title });
-  main.append(topbar(crumbs, el('button', { class: 'btn small danger', onclick: () => deleteNote(note.path) }, '删除')));
+  main.append(topbar(crumbs, moveSelect(note), el('button', { class: 'btn small danger', onclick: () => deleteNote(note.path) }, '删除')));
   main.append(await noteEditor(note));
+}
+
+function moveSelect(note) {
+  return el('select', { class: 'btn small', title: '移动到其他笔记本', onchange: async (e) => {
+    const f = e.target.value; if (!f) return;
+    try { const r = await api('POST', '/api/move', { path: note.path, folder: f, learn: true }); toast(`已移动到 ${nbOf(f)?.title || f}`); await loadSidebar(); closePeek(); location.hash = `#/note/${encodeURIComponent(r.path)}`; } catch (err) { toast(err.message, true); }
+  } }, el('option', { value: '' }, '移动到…'), state.notebooks.filter((n) => n.folder !== note.folder).map((n) => el('option', { value: n.folder }, `${n.icon} ${n.title}`)));
 }
 
 async function noteEditor(note, { onSaved } = {}) {
   const page = el('div', { class: 'page' });
-  const board = state.boards.find((b) => b.folder === note.folder);
+  const nb = note.notebook ? nbOf(note.notebook.folder) : null;
   let saving = false;
   let updatedEl = null;
   const save = async (patch) => {
@@ -263,8 +395,7 @@ async function noteEditor(note, { onSaved } = {}) {
       const updated = await api('PATCH', notePath(note.path), patch);
       Object.assign(note, updated);
       if (updatedEl) updatedEl.textContent = `${fmtTime(note.properties.updated)}  ·  创建 ${fmtTime(note.properties.created)}  ·  ${note.path}`;
-      toast('已保存');
-      onSaved?.(note);
+      toast('已保存'); onSaved?.(note);
     } catch (err) { toast(err.message, true); }
     finally { saving = false; }
   };
@@ -274,23 +405,22 @@ async function noteEditor(note, { onSaved } = {}) {
   title.addEventListener('blur', () => { const t = title.textContent.trim(); if (t && t !== note.title) save({ title: t }); });
   page.append(title);
 
-  // properties
-  const props = el('div', { class: 'props' });
   const p = note.properties;
+  if (nb?.inbox) page.append(el('div', { class: 'inbox-item', style: 'margin-bottom:14px' }, el('span', { class: 'muted', style: 'font-size:13px' }, '这条还在收件箱。'), assignChips({ path: note.path, suggested: p.suggested || [] }, { onDone: async () => { await loadSidebar(); closePeek(); location.hash = '#/'; } })));
+
+  const props = el('div', { class: 'props' });
   const row = (label, icon, valueNode) => props.append(el('div', { class: 'k' }, el('span', {}, icon), label), el('div', { class: 'v' }, valueNode));
-  if (board) {
-    const sel = el('select', { onchange: (e) => save({ status: e.target.value }) }, board.columns.map((c) => el('option', { value: c, selected: c === p.status }, c)));
-    row('状态', '◎', sel);
+  if (nb?.kind === 'board' && nb.columns) {
+    row('状态', '◎', el('select', { onchange: (e) => save({ status: e.target.value }) }, nb.columns.map((c) => el('option', { value: c, selected: c === p.status }, c))));
   } else if (p.status) row('状态', '◎', el('span', { class: 'chip status' }, p.status));
-  const tagsInput = el('input', { value: (p.tags || []).join(', '), placeholder: '逗号分隔', onblur: (e) => { const v = e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean); if (JSON.stringify(v) !== JSON.stringify(p.tags || [])) save({ tags: v }); } });
-  row('标签', '#', tagsInput);
-  row('来源', '🤖', p.source ? el('span', { class: 'chip source' }, p.source) : el('span', { class: 'muted' }, '—'));
+  row('标签', '#', el('input', { value: (p.tags || []).join(', '), placeholder: '逗号分隔', onblur: (e) => { const v = e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean); if (JSON.stringify(v) !== JSON.stringify(p.tags || [])) save({ tags: v }); } }));
+  row('来源', '🤖', p.sources?.length ? p.sources.map((s) => chipSource(s)) : p.source ? chipSource(p.source) : el('span', { class: 'muted' }, '—'));
   row('日期', '📅', el('input', { type: 'date', value: p.date || '', onchange: (e) => save({ date: e.target.value }) }));
   for (const [k, v] of Object.entries(p)) {
     if (SYSTEM_PROPS.includes(k)) continue;
     const inp = el('input', { value: typeof v === 'object' ? JSON.stringify(v) : String(v), onblur: (e) => { if (e.target.value !== String(v)) save({ [k]: e.target.value }); } });
-    const del = el('button', { class: 'mini-btn', title: '删除属性', onclick: () => save({ [k]: null }).then(() => { inp.closest('.v').remove(); del._k.remove(); }) }, '✕');
-    const kEl = el('div', { class: 'k' }, el('span', {}, '≡'), k); del._k = kEl;
+    const kEl = el('div', { class: 'k' }, el('span', {}, '≡'), k);
+    const del = el('button', { class: 'mini-btn', title: '删除属性', onclick: () => save({ [k]: null }).then(() => { inp.closest('.v').remove(); kEl.remove(); }) }, '✕');
     props.append(kEl, el('div', { class: 'v' }, inp, del));
   }
   props.append(el('div', { class: 'add-prop', onclick: async () => { const k = prompt('属性名'); if (!k) return; const v = prompt(`「${k}」的值`) ?? ''; await save({ [k]: v }); page.replaceWith(await noteEditor(note, { onSaved })); } }, '＋ 添加属性'));
@@ -298,8 +428,16 @@ async function noteEditor(note, { onSaved } = {}) {
   props.append(el('div', { class: 'k' }, el('span', {}, '🕒'), '更新'), updatedEl);
   page.append(props, el('hr', { class: 'divider' }));
 
-  // body
   const bodyWrap = el('div');
+  const linksBox = el('div', { class: 'links-box' });
+  const drawLinks = () => {
+    linksBox.innerHTML = '';
+    const links = (note.links || []);
+    const back = (note.backlinks || []);
+    if (!links.length && !back.length) { linksBox.append(el('div', { class: 'muted' }, '在正文里写 [[页面标题]] 可以链接到其他笔记。')); return; }
+    if (links.length) linksBox.append(el('h4', {}, '链接到'), el('div', {}, links.map((l) => l.path ? el('a', { href: `#/note/${encodeURIComponent(l.path)}` }, '→ ' + l.label) : el('span', { class: 'muted', style: 'margin-right:8px' }, '→ ' + l.label + '（未创建）'))));
+    if (back.length) linksBox.append(el('h4', {}, `被引用 · ${back.length}`), el('div', {}, back.map((b) => el('a', { href: `#/note/${encodeURIComponent(b.path)}` }, `← ${b.title}`, el('span', { class: 'muted' }, nbOf(b.folder) ? `  ${nbOf(b.folder).icon}` : '')))));
+  };
   const showView = () => {
     bodyWrap.innerHTML = '';
     const v = el('div', { class: 'body-view md', html: renderMd(note.body) });
@@ -309,10 +447,8 @@ async function noteEditor(note, { onSaved } = {}) {
   const showEdit = () => {
     bodyWrap.innerHTML = '';
     const ta = el('textarea', { class: 'body-edit', spellcheck: 'false' }, note.body);
-    const bar = el('div', { class: 'editbar' }, el('span', {}, 'Markdown · ⌘/Ctrl+S 保存 · Esc 取消'),
-      el('button', { class: 'btn small', onclick: showView }, '取消'),
-      el('button', { class: 'btn small primary', onclick: () => commit() }, '保存'));
-    const commit = async () => { if (ta.value !== note.body) await save({ body: ta.value }); showView(); };
+    const commit = async () => { if (ta.value !== note.body) { await save({ body: ta.value }); try { const fresh = await get(notePath(note.path)); note.links = fresh.links; note.backlinks = fresh.backlinks; drawLinks(); } catch {} } showView(); };
+    const bar = el('div', { class: 'editbar' }, el('span', {}, 'Markdown · [[链接]] · ⌘/Ctrl+S 保存 · Esc 取消'), el('button', { class: 'btn small', onclick: showView }, '取消'), el('button', { class: 'btn small primary', onclick: commit }, '保存'));
     ta.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); commit(); }
       if (e.key === 'Escape') showView();
@@ -321,27 +457,25 @@ async function noteEditor(note, { onSaved } = {}) {
     bodyWrap.append(bar, ta);
     ta.focus(); ta.style.height = Math.max(300, ta.scrollHeight + 40) + 'px';
   };
-  showView();
-  page.append(bodyWrap);
+  showView(); drawLinks();
+  page.append(bodyWrap, linksBox);
   return page;
 }
 
 async function openPeek(path) {
   const peek = $('#peek');
-  peek.innerHTML = '';
-  peek.classList.remove('hidden');
+  peek.innerHTML = ''; peek.classList.remove('hidden');
   try {
     const note = await get(notePath(path));
     peek.append(el('div', { class: 'peek-bar' },
       el('button', { class: 'btn small', onclick: () => { location.hash = `#/note/${encodeURIComponent(path)}`; closePeek(); } }, '⤢ 全页打开'),
-      el('div', { class: 'spacer' }),
+      moveSelect(note), el('div', { class: 'spacer' }),
       el('button', { class: 'btn small danger', onclick: () => deleteNote(path) }, '删除'),
       el('button', { class: 'btn small', onclick: closePeek }, '✕')));
     peek.append(await noteEditor(note, { onSaved: () => route() }));
   } catch (err) { peek.append(el('div', { class: 'page err' }, err.message)); }
 }
 function closePeek() { $('#peek').classList.add('hidden'); $('#peek').innerHTML = ''; }
-
 async function deleteNote(path) {
   if (!confirm(`把「${path}」移到回收站？`)) return;
   try { await api('DELETE', notePath(path)); toast('已移到 .trash'); closePeek(); await loadSidebar(); location.hash = '#/'; } catch (err) { toast(err.message, true); }
@@ -351,26 +485,25 @@ async function deleteNote(path) {
 function modal(title, content, { okLabel = '确定', onOk } = {}) {
   const m = $('#modal'); m.innerHTML = ''; m.classList.remove('hidden');
   const close = () => { m.classList.add('hidden'); m.innerHTML = ''; };
-  const box = el('div', { class: 'box' }, el('h3', {}, title), el('div', { class: 'content' }, content),
-    onOk && el('div', { class: 'footer' }, el('button', { class: 'btn', onclick: close }, '取消'), el('button', { class: 'btn primary', onclick: async () => { try { if ((await onOk()) !== false) close(); } catch (err) { toast(err.message, true); } } }, okLabel)));
-  m.append(box);
+  m.append(el('div', { class: 'box' }, el('h3', {}, title), el('div', { class: 'content' }, content),
+    onOk && el('div', { class: 'footer' }, el('button', { class: 'btn', onclick: close }, '取消'), el('button', { class: 'btn primary', onclick: async () => { try { if ((await onOk()) !== false) close(); } catch (err) { toast(err.message, true); } } }, okLabel))));
   m.onclick = (e) => { if (e.target === m) close(); };
   document.addEventListener('keydown', function esc(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); } });
   return close;
 }
 
 function newNoteDialog({ folder = '', columns, status } = {}) {
-  const title = el('input', { type: 'text', placeholder: '标题', autofocus: true });
-  const folderIn = el('input', { type: 'text', value: folder, placeholder: '文件夹（留空 = 根目录）' });
+  const title = el('input', { type: 'text', placeholder: '标题' });
+  const folderIn = el('select', {}, el('option', { value: '', selected: !folder }, '根目录'), state.notebooks.filter((n) => n.kind !== 'journal').map((n) => el('option', { value: n.folder, selected: n.folder === folder }, `${n.icon} ${n.title}`)));
   const statusSel = columns ? el('select', {}, columns.map((c) => el('option', { value: c, selected: c === status }, c))) : null;
   const tags = el('input', { type: 'text', placeholder: '标签，逗号分隔' });
-  const body = el('textarea', { class: 'body-edit', style: 'min-height:140px;border:1px solid var(--border);border-radius:6px;padding:8px', placeholder: 'Markdown 正文（可选）' });
-  const form = el('div', { class: 'form' }, el('label', {}, '标题'), title, el('label', {}, '文件夹'), folderIn, statusSel && el('label', {}, '列'), statusSel, el('label', {}, '标签'), tags, el('label', {}, '正文'), body);
+  const body = el('textarea', { class: 'body-edit', style: 'min-height:140px;border:1px solid var(--border);border-radius:6px;padding:8px', placeholder: 'Markdown 正文（可选），支持 [[链接]]' });
+  const form = el('div', { class: 'form' }, el('label', {}, '标题'), title, el('label', {}, '笔记本'), folderIn, statusSel && el('label', {}, '列'), statusSel, el('label', {}, '标签'), tags, el('label', {}, '正文'), body);
   modal(columns ? '新建卡片' : '新建页面', form, {
     okLabel: '创建',
     onOk: async () => {
       if (!title.value.trim()) { title.focus(); return false; }
-      const n = await api('POST', '/api/notes', { folder: folderIn.value.trim(), title: title.value.trim(), body: body.value, status: statusSel?.value, tags: tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
+      const n = await api('POST', '/api/notes', { folder: folderIn.value, title: title.value.trim(), body: body.value, status: statusSel?.value, tags: tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
       toast('已创建'); await loadSidebar();
       if (columns) { route(); openPeek(n.path); } else location.hash = `#/note/${encodeURIComponent(n.path)}`;
     }
@@ -378,20 +511,28 @@ function newNoteDialog({ folder = '', columns, status } = {}) {
   setTimeout(() => title.focus(), 30);
 }
 
-function newBoardDialog() {
-  const folder = el('input', { type: 'text', placeholder: '例如：Alpha看板（即文件夹名）' });
-  const icon = el('input', { type: 'text', value: '📋', style: 'width:60px' });
-  const cols = el('input', { type: 'text', value: '待处理, 进行中, 已完成' });
-  const desc = el('input', { type: 'text', placeholder: '一句话说明（可选）' });
-  modal('新建看板', el('div', { class: 'form' }, el('label', {}, '名称'), folder, el('label', {}, '图标'), icon, el('label', {}, '列'), cols, el('label', {}, '说明'), desc), {
-    okLabel: '创建',
+function notebookDialog({ folder, meta } = {}) {
+  const editing = !!meta;
+  const folderIn = el('input', { type: 'text', value: folder || '', placeholder: '例如：健康（即文件夹名）', disabled: editing });
+  const title = el('input', { type: 'text', value: meta?.title || '', placeholder: '显示名称（默认同文件夹名）' });
+  const icon = el('input', { type: 'text', value: meta?.icon || '📁', style: 'width:60px' });
+  const kind = el('select', {}, ['pages', 'journal', 'board'].map((k) => el('option', { value: k, selected: (meta?.kind || 'pages') === k }, `${KIND_LABEL[k]} — ${k === 'journal' ? '一天一页，按时间追加（健康、财务）' : k === 'board' ? '卡片 + 列（看板）' : '一条内容一页（阅读、思维）'}`)));
+  const cols = el('input', { type: 'text', value: (meta?.columns || ['待处理', '进行中', '已完成']).join(', ') });
+  const colsRow = [el('label', {}, '列'), cols];
+  const kw = el('input', { type: 'text', value: (meta?.keywords || []).join(', '), placeholder: '用于自动归类，逗号分隔：睡眠, 运动, 体重' });
+  const desc = el('textarea', { class: 'body-edit', style: 'min-height:70px;border:1px solid var(--border);border-radius:6px;padding:8px', placeholder: '什么内容属于这里？一句话。agent 和归类器都会参考。' }, meta?.description || '');
+  const syncCols = () => colsRow.forEach((n) => n.classList.toggle('hidden', kind.value !== 'board'));
+  kind.onchange = syncCols; syncCols();
+  modal(editing ? `设置 · ${meta.title}` : '新建笔记本', el('div', { class: 'form' }, el('label', {}, '文件夹'), folderIn, el('label', {}, '名称'), title, el('label', {}, '图标'), icon, el('label', {}, '形态'), kind, ...colsRow, el('label', {}, '关键词'), kw, el('label', {}, '说明'), desc), {
+    okLabel: editing ? '保存' : '创建',
     onOk: async () => {
-      if (!folder.value.trim()) return false;
-      const b = await api('POST', '/api/boards', { folder: folder.value.trim(), title: folder.value.trim(), icon: icon.value, columns: cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), description: desc.value });
-      await loadSidebar(); location.hash = `#/board/${encodeURIComponent(b.folder)}`;
+      const f = folderIn.value.trim(); if (!f) return false;
+      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), description: desc.value.trim(), columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined };
+      if (editing) await api('PATCH', `/api/notebooks/${encPath(f)}`, payload); else await api('POST', '/api/notebooks', { folder: f, ...payload });
+      await loadSidebar(); location.hash = nbHref(f); route();
     }
   });
-  setTimeout(() => folder.focus(), 30);
+  setTimeout(() => (editing ? title : folderIn).focus(), 30);
 }
 
 function searchDialog() {
@@ -399,11 +540,10 @@ function searchDialog() {
   const results = el('div', { style: 'margin-top:8px;max-height:50vh;overflow:auto' });
   let t;
   input.addEventListener('input', () => { clearTimeout(t); t = setTimeout(async () => {
-    const q = input.value.trim(); results.innerHTML = '';
-    if (!q) return;
+    const q = input.value.trim(); results.innerHTML = ''; if (!q) return;
     const hits = await get(`/api/search?q=${encodeURIComponent(q)}`);
     if (!hits.length) results.append(el('div', { class: 'empty' }, '没有结果'));
-    for (const h of hits) results.append(el('div', { class: 'search-hit', onclick: () => { close(); openPeek(h.path); } }, el('div', { class: 't' }, h.title), el('div', { class: 's' }, h.snippet), el('div', { class: 'p' }, h.path)));
+    for (const h of hits) results.append(el('div', { class: 'search-hit', onclick: () => { close(); openPeek(h.path); } }, el('div', { class: 't' }, h.title), el('div', { class: 's' }, h.snippet), el('div', { class: 'p' }, (nbOf(h.folder)?.title || h.folder || '/') + ' · ' + h.path)));
   }, 180); });
   const close = modal('搜索', el('div', {}, input, results));
   setTimeout(() => input.focus(), 30);
@@ -415,8 +555,7 @@ async function viewSettings(main) {
   const page = el('div', { class: 'page settings' });
   page.append(el('h1', { class: 'page-title' }, '设置'), el('p', {}, `笔记库位置：${status.vault}`));
 
-  // tokens
-  page.append(el('h2', {}, 'Agent 访问令牌'), el('p', {}, '每个 agent 一个 token。read 只能读取，write 可以创建 / 修改 / 移动卡片，admin 可以管理令牌和备份。可限制只能访问某些文件夹。'));
+  page.append(el('h2', {}, 'Agent 访问令牌'), el('p', {}, el('a', { href: '#/agents', style: 'color:var(--accent)' }, '接入 Agent 页'), ' 可以自动检测并一键接入本机 agent。这里管理已有令牌：read 只能读取，write 可以记录 / 修改，admin 可以管理令牌和备份。'));
   const tokBox = el('div', { class: 'card-box' });
   if (tokens.length) {
     const t = el('table', { style: 'width:100%;font-size:14px;border-collapse:collapse' });
@@ -428,39 +567,25 @@ async function viewSettings(main) {
         el('td', { style: 'padding:6px;text-align:right' }, el('button', { class: 'btn small danger', onclick: async () => { if (!confirm(`撤销「${tk.name}」？`)) return; await api('DELETE', `/api/tokens/${encodeURIComponent(tk.name)}`); route(); } }, '撤销'))));
     }
     tokBox.append(t);
-  } else tokBox.append(el('div', { class: 'empty' }, '还没有令牌。创建一个让 agent 接入。'));
+  } else tokBox.append(el('div', { class: 'empty' }, '还没有令牌。'));
   page.append(tokBox);
 
-  const name = el('input', { type: 'text', placeholder: '例如 claude-code、codex、alpha-bot' });
-  const sRead = el('input', { type: 'checkbox', checked: true, disabled: true }), sWrite = el('input', { type: 'checkbox', checked: true }), sAdmin = el('input', { type: 'checkbox' });
+  const name = el('input', { type: 'text', placeholder: '例如 my-bot' });
+  const sWrite = el('input', { type: 'checkbox', checked: true }), sAdmin = el('input', { type: 'checkbox' });
   const folders = el('input', { type: 'text', placeholder: '留空 = 全部；或填 Alpha看板, 灵感' });
   const out = el('div');
   page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
     el('label', {}, '名称'), name,
-    el('label', {}, '权限'), el('div', { class: 'row' }, el('label', {}, sRead, ' read'), el('label', {}, sWrite, ' write'), el('label', {}, sAdmin, ' admin')),
+    el('label', {}, '权限'), el('div', { class: 'row' }, el('label', {}, el('input', { type: 'checkbox', checked: true, disabled: true }), ' read'), el('label', {}, sWrite, ' write'), el('label', {}, sAdmin, ' admin')),
     el('label', {}, '限制文件夹'), folders,
     el('div', { class: 'actions' }, el('button', { class: 'btn primary', onclick: async () => {
       try {
-        const scopes = ['read', sWrite.checked && 'write', sAdmin.checked && 'admin'].filter(Boolean);
-        const r = await api('POST', '/api/tokens', { name: name.value.trim(), scopes, folders: folders.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
-        out.innerHTML = '';
-        const vault = status.vault;
-        out.append(el('div', { class: 'token-box' },
-          el('div', { style: 'font-weight:600;margin-bottom:6px' }, `「${r.name}」的令牌（只显示一次，请立即保存）`),
-          el('div', { class: 'code' }, r.token),
-          el('div', { style: 'font-weight:500;margin-top:12px' }, 'Claude Code（stdio）：'),
-          el('div', { class: 'code' }, `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${r.token} -e AGENT_NOTEBOOK_VAULT="${vault}" -- node "${vault.replace(/\/vault$/, '')}/src/cli.js" mcp`),
-          el('div', { style: 'font-weight:500;margin-top:12px' }, '通用 MCP 配置（stdio，Codex / Cursor / Claude Desktop 等）：'),
-          el('div', { class: 'code' }, JSON.stringify({ mcpServers: { 'agent-notebook': { command: 'node', args: [`${vault.replace(/\/vault$/, '')}/src/cli.js`, 'mcp'], env: { AGENT_NOTEBOOK_TOKEN: r.token, AGENT_NOTEBOOK_VAULT: vault } } } }, null, 2)),
-          el('div', { style: 'font-weight:500;margin-top:12px' }, '远程 / HTTP 方式：'),
-          el('div', { class: 'code' }, `URL: ${location.origin}/mcp\nAuthorization: Bearer ${r.token}`)));
+        const r = await api('POST', '/api/agents/snippets', { name: name.value.trim(), scopes: ['read', sWrite.checked && 'write', sAdmin.checked && 'admin'].filter(Boolean), folders: folders.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
+        out.innerHTML = ''; out.append(el('div', { class: 'token-box' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的令牌（只显示一次）`), snippetBlocks(r)));
         name.value = ''; folders.value = '';
-        const list = await get('/api/tokens'); // refresh table without wiping the token box
-        tokBox.replaceWith(await (async () => { const tmp = el('div'); await viewSettingsTokensOnly(tmp, list); return tmp.firstChild; })());
       } catch (err) { toast(err.message, true); }
     } }, '创建令牌'))), out));
 
-  // backup
   const bk = status.backup;
   page.append(el('h2', {}, '备份'), el('p', {}, '把整个笔记库作为 git 仓库定期 commit，并 push 到 GitHub（或任何 git 远端）。未开启时所有内容只保存在本地。'));
   const remote = el('input', { type: 'url', value: bk.remote || '', placeholder: 'https://github.com/you/my-notes.git（先在 GitHub 新建一个空仓库）' });
@@ -479,16 +604,7 @@ async function viewSettings(main) {
       el('button', { class: 'btn primary', onclick: async () => { try { await api('POST', '/api/backup/config', { remote: remote.value.trim(), enabled: enabled.checked, intervalMinutes: Number(interval.value) }); toast('已保存备份设置'); route(); } catch (err) { toast(err.message, true); } } }, '保存设置'),
       el('button', { class: 'btn', onclick: async () => { toast('备份中…'); const r = await api('POST', '/api/backup/run'); toast(r.lastError ? '备份失败：' + r.lastError : '备份完成', !!r.lastError); route(); } }, '立即备份'))),
     bkStatus));
-
-  page.append(el('h2', {}, '给 agent 的说明（Skill）'), el('p', {}, el('span', {}, '项目里的 '), el('code', {}, 'skills/agent-notebook/SKILL.md'), el('span', {}, ' 描述了工具用法和约定（哪个看板放什么、写卡片时要带 source），可以直接装到 Claude Code / Codex 的 skills 目录。')));
   main.append(topbar([{ label: '设置' }]), page);
-}
-async function viewSettingsTokensOnly(container, tokens) {
-  const tmp = el('div', { class: 'card-box' });
-  if (!tokens.length) { tmp.append(el('div', { class: 'empty' }, '还没有令牌。')); container.append(tmp); return; }
-  const t = el('table', { style: 'width:100%;font-size:14px;border-collapse:collapse' });
-  for (const tk of tokens) t.append(el('tr', {}, el('td', { style: 'padding:6px;font-weight:500' }, tk.name), el('td', { style: 'padding:6px;font-family:var(--mono);font-size:12px' }, tk.prefix + '…'), el('td', { style: 'padding:6px' }, tk.scopes.map((s) => el('span', { class: 'chip status' }, s))), el('td', { style: 'padding:6px' }, tk.folders.map((f) => el('span', { class: 'chip' }, f === '*' ? '全部' : f)))));
-  tmp.append(t); container.append(tmp);
 }
 
 // ---------------------------------------------------------------- agents
@@ -509,25 +625,19 @@ async function viewAgents(main) {
   const page = el('div', { class: 'page settings' });
   page.append(el('h1', { class: 'page-title' }, '接入 Agent'),
     el('p', {}, '下面是在这台电脑上检测到的 agent。点「一键接入」会：为它生成一个专属 token → 把 MCP 配置写进它的配置文件（原文件先备份为 .bak）→ 装上使用说明 Skill。之后重启那个 agent 就能用了。'));
-
   const section = (title, list, desc) => {
     if (!list.length) return;
     page.append(el('h2', {}, title));
     if (desc) page.append(el('p', {}, desc));
     const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-bottom:8px' });
-    for (const a of list) grid.append(agentCard(a, data));
+    for (const a of list) grid.append(agentCard(a));
     page.append(grid);
   };
-  const detectedTodo = data.agents.filter((a) => a.detected && !a.connected && a.canWrite);
-  const connectedList = data.agents.filter((a) => a.connected);
-  const manual = data.agents.filter((a) => a.detected && !a.canWrite);
-  const notFound = data.agents.filter((a) => !a.detected);
-  section('可一键接入', detectedTodo, null);
-  section('已接入', connectedList, '再次接入会生成新的 token 并覆盖该 agent 配置里的 agent-notebook 条目。');
-  section('需要在应用内手动添加', manual, '这些应用的 MCP 设置在它们自己的界面里。点「生成配置」拿到地址和 token，粘贴进去即可。');
+  section('可一键接入', data.agents.filter((a) => a.detected && !a.connected && a.canWrite));
+  section('已接入', data.agents.filter((a) => a.connected), '再次接入会生成新的 token 并覆盖该 agent 配置里的 agent-notebook 条目。');
+  section('需要在应用内手动添加', data.agents.filter((a) => a.detected && !a.canWrite), '这些应用的 MCP 设置在它们自己的界面里。点「生成配置」拿到地址和 token，粘贴进去即可。');
 
-  page.append(el('h2', {}, '其他 agent（Hermes、Muse、自写的 bot…）'),
-    el('p', {}, '任何支持 MCP 的 agent 都能接入。起个名字生成 token，然后把下面给出的配置粘到它的 MCP 设置里。'));
+  page.append(el('h2', {}, '其他 agent（Hermes、Muse、自写的 bot…）'), el('p', {}, '任何支持 MCP 的 agent 都能接入。起个名字生成 token，然后把下面给出的配置粘到它的 MCP 设置里。'));
   const name = el('input', { type: 'text', placeholder: '例如 hermes、muse、my-bot' });
   const sWrite = el('input', { type: 'checkbox', checked: true });
   const folders = el('input', { type: 'text', placeholder: '留空 = 全部；或填 Alpha看板, 灵感' });
@@ -539,25 +649,20 @@ async function viewAgents(main) {
     el('div', { class: 'actions' }, el('button', { class: 'btn primary', onclick: async () => {
       try {
         const r = await api('POST', '/api/agents/snippets', { name: name.value.trim(), scopes: ['read', sWrite.checked && 'write'].filter(Boolean), folders: folders.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
-        out.innerHTML = '';
-        out.append(el('div', { class: 'token-box' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r)));
-        name.value = '';
+        out.innerHTML = ''; out.append(el('div', { class: 'token-box' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r))); name.value = '';
       } catch (err) { toast(err.message, true); }
     } }, '生成配置'))), out));
-
-  if (notFound.length) {
-    page.append(el('h2', {}, '未检测到'), el('p', { class: 'muted', style: 'font-size:13px' }, notFound.map((a) => `${a.icon} ${a.name}`).join('　')));
-  }
+  const notFound = data.agents.filter((a) => !a.detected);
+  if (notFound.length) page.append(el('h2', {}, '未检测到'), el('p', { class: 'muted', style: 'font-size:13px' }, notFound.map((a) => `${a.icon} ${a.name}`).join('　')));
   main.append(topbar([{ label: '接入 Agent' }]), page);
 }
 
-function agentCard(a, data) {
+function agentCard(a) {
   const status = a.connected ? el('span', { class: 'chip source' }, '已接入') : a.canWrite ? el('span', { class: 'chip status' }, '可一键接入') : el('span', { class: 'chip' }, '手动');
-  const body = el('div', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;word-break:break-all' }, a.configPath ? `配置：${a.configPath.replace(/^\/Users\/[^/]+/, '~')}` : (a.note || ''));
   const result = el('div');
   const card = el('div', { class: 'card-box', style: 'margin:0;display:flex;flex-direction:column' },
     el('div', { style: 'display:flex;align-items:center;gap:8px' }, el('span', { style: 'font-size:22px' }, a.icon), el('span', { style: 'font-weight:600;flex:1' }, a.name), status),
-    body);
+    el('div', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;word-break:break-all' }, a.configPath ? `配置：${a.configPath.replace(/^\/Users\/[^/]+/, '~')}` : (a.note || '')));
   const actions = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' });
   if (a.canWrite) {
     const sWrite = el('input', { type: 'checkbox', checked: true });
@@ -570,26 +675,17 @@ function agentCard(a, data) {
       try {
         const r = await api('POST', `/api/agents/${a.id}/connect`, { scopes: ['read', sWrite.checked && 'write'].filter(Boolean), skill: sSkill.checked });
         result.innerHTML = '';
-        result.append(el('div', { class: 'token-box', style: 'margin-top:10px;font-size:13px' },
-          el('div', { style: 'font-weight:600' }, `✓ 已接入 ${r.agent}`),
-          el('div', {}, `token「${r.tokenName}」（${r.scopes.join(', ')}）`),
-          el('div', { style: 'word-break:break-all' }, `已写入 ${r.configPath}`),
-          r.backupPath && el('div', { class: 'muted' }, `原文件备份：${r.backupPath}`),
-          r.skillPath && el('div', { class: 'muted' }, `Skill 已装到 ${r.skillPath}`),
-          r.restart && el('div', { style: 'margin-top:6px' }, `下一步：${r.restart}`)));
-        btn.textContent = '重新接入'; btn.disabled = false; btn.classList.remove('primary');
-        status.replaceWith(el('span', { class: 'chip source' }, '已接入'));
+        result.append(el('div', { class: 'token-box', style: 'margin-top:10px;font-size:13px' }, el('div', { style: 'font-weight:600' }, `✓ 已接入 ${r.agent}`), el('div', {}, `token「${r.tokenName}」（${r.scopes.join(', ')}）`),
+          el('div', { style: 'word-break:break-all' }, `已写入 ${r.configPath}`), r.backupPath && el('div', { class: 'muted' }, `原文件备份：${r.backupPath}`), r.skillPath && el('div', { class: 'muted' }, `Skill 已装到 ${r.skillPath}`), r.restart && el('div', { style: 'margin-top:6px' }, `下一步：${r.restart}`)));
+        btn.textContent = '重新接入'; btn.disabled = false; btn.classList.remove('primary'); status.replaceWith(el('span', { class: 'chip source' }, '已接入'));
       } catch (err) { toast(err.message, true); btn.textContent = a.connected ? '重新接入' : '一键接入'; btn.disabled = false; }
     } }, a.connected ? '重新接入' : '一键接入'));
   } else {
     actions.append(el('div', { style: 'flex:1' }));
     actions.append(el('button', { class: 'btn small primary', onclick: async (e) => {
       const btn = e.currentTarget; btn.disabled = true;
-      try {
-        const r = await api('POST', '/api/agents/snippets', { name: a.id, scopes: ['read', 'write'], folders: [] });
-        result.innerHTML = '';
-        result.append(el('div', { class: 'token-box', style: 'margin-top:10px;font-size:13px' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r)));
-      } catch (err) { toast(err.message, true); }
+      try { const r = await api('POST', '/api/agents/snippets', { name: a.id, scopes: ['read', 'write'], folders: [] }); result.innerHTML = ''; result.append(el('div', { class: 'token-box', style: 'margin-top:10px;font-size:13px' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r))); }
+      catch (err) { toast(err.message, true); }
       btn.disabled = false;
     } }, '生成配置'));
   }
@@ -606,7 +702,7 @@ async function viewActivity(main) {
   list.append(el('div', { class: 'row', style: 'color:var(--text-3);font-size:12px' }, el('div', {}, '时间'), el('div', {}, 'Agent'), el('div', {}, '操作'), el('div', {}, '对象')));
   for (const r of rows) {
     list.append(el('div', { class: 'row' }, el('div', { class: 'ts' }, fmtTime(r.ts)), el('div', {}, el('span', { class: 'chip source' }, r.agent)),
-      el('div', { class: 'act' + (r.action.includes('denied') ? ' denied' : '') }, r.action + (r.via ? ` · ${r.via}` : '')),
+      el('div', { class: 'act' + (r.action.includes('denied') ? ' denied' : '') }, r.action + (r.via ? ` · ${r.via}` : '') + (r.mode ? ` · ${r.mode}` : '')),
       el('div', { class: 'tgt' }, r.target ? el('a', { href: r.target.endsWith('.md') ? `#/note/${encodeURIComponent(r.target)}` : '#', onclick: (e) => { if (r.target.endsWith('.md')) { e.preventDefault(); openPeek(r.target); } } }, r.target) : '', r.error && el('div', { class: 'err', style: 'font-size:12px' }, r.error))));
   }
   if (!rows.length) list.append(el('div', { class: 'empty' }, '还没有活动'));
@@ -616,15 +712,15 @@ async function viewActivity(main) {
 
 // ---------------------------------------------------------------- boot
 $('#new-page').onclick = () => newNoteDialog({});
-$('#new-board').onclick = newBoardDialog;
+$('#new-notebook').onclick = () => notebookDialog();
 $('#search').addEventListener('focus', (e) => { e.target.blur(); searchDialog(); });
 $('#collapse').onclick = () => $('#sidebar').classList.add('collapsed');
 $('#expand').onclick = () => $('#sidebar').classList.remove('collapsed');
 document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchDialog(); } });
 window.addEventListener('hashchange', () => { closePeek(); route(); });
 loadSidebar().then(route);
-setInterval(async () => { // light auto-refresh so agent writes show up while you watch a board
+setInterval(async () => { // light auto-refresh so agent writes show up while you read
   if (document.hidden || !$('#peek').classList.contains('hidden') || !$('#modal').classList.contains('hidden')) return;
   if (document.activeElement && document.activeElement !== document.body) return;
-  if (state.route?.kind === 'board' || state.route?.kind === 'home') { await loadSidebar(); route(); }
+  if (['nb', 'home'].includes(state.route?.kind)) { await loadSidebar(); route(); }
 }, 20000);

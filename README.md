@@ -8,6 +8,16 @@ A **local-first notebook shared by you and all your AI agents**.
 - **GitHub backup** — optional scheduled `git commit` + `push` to any remote. Off by default: then your notes stay on your disk only.
 - **Skill included** — `skills/agent-notebook/SKILL.md` teaches agents the conventions (which board for what, always tag `source`, dedupe before writing).
 
+## How it is organised (v0.2)
+
+- **Notebooks** (领域) are top-level folders with a `_notebook.md`: 收件箱, 健康, 阅读, 思维, 财务, Alpha看板, 选题会 … each with an icon, a description, **routing keywords** and a *kind*:
+  - `journal` — one page per day, entries appended with a timestamp (健康, 财务)
+  - `board` — kanban cards with columns (Alpha看板, 选题会)
+  - `pages` — one page per note (阅读, 思维)
+- **Agents call one tool**: `notebook_capture { text }`. The router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`).
+- **Links**: write `[[Page title]]` anywhere; it resolves by title across notebooks, renders as a link, and the target shows **backlinks**.
+- **Reading**: the home page is a quick-capture box, the inbox, and *today's feed* grouped by notebook; each notebook has kanban / timeline / table views.
+
 ## Quick start
 
 ```bash
@@ -78,6 +88,10 @@ While `serve` runs, `POST http://127.0.0.1:3777/mcp` with `Authorization: Bearer
 
 | Tool | Scope | What it does |
 |---|---|---|
+| `notebook_capture` | write | **the one call**: route text to the right notebook (journal entry / card / page), returns related notes |
+| `notebook_list_notebooks` / `notebook_create_notebook` | read / write | areas with kind, keywords, columns |
+| `notebook_today` | read | everything recorded on a day, grouped by notebook |
+| `notebook_move_note` | write | move a note (e.g. out of the inbox); the router learns |
 | `notebook_whoami` | — | token name, scopes, folder limits |
 | `notebook_list_boards` / `notebook_get_board` | read | boards, columns, cards (optionally one `date`) |
 | `notebook_list_notes` / `notebook_read_note` / `notebook_search` | read | browse and read |
@@ -92,12 +106,17 @@ While `serve` runs, `POST http://127.0.0.1:3777/mcp` with `Authorization: Bearer
 ```
 vault/
   欢迎.md                      # a page: Markdown + frontmatter
-  灵感/                        # a plain folder of pages
+  收件箱/_notebook.md          # inbox: true
+  健康/
+    _notebook.md               # kind: journal, keywords: [睡眠, 运动, …]
+    2026-10-31.md              # one page per day, "## 09:12 · title" entries
+  阅读/_notebook.md            # kind: pages
   Alpha看板/
-    _board.md                  # columns: [新发现, 关注中, 已验证, 归档]
+    _notebook.md               # kind: board, columns: [新发现, 关注中, 已验证, 归档]
     Hyperliquid ….md           # a card: status / tags / source / date / url …
   .notebook/
     config.json                # port, token hashes (sha256), backup settings  (git-ignored)
+    rules.json                 # learned routing rules (keyword / tag / source → notebook)
     audit.jsonl                # who did what, when
   .trash/                      # deleted notes
 ```

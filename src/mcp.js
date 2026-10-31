@@ -2,12 +2,14 @@
 // Used by both the stdio transport (local agents) and the HTTP transport (remote agents).
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { Router, capture, digest } from './notebooks.js';
 
 const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = (err) => ({ isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] });
 
 export function buildMcpServer({ vault, auth, principal }) {
-  const server = new McpServer({ name: 'agent-notebook', version: '0.1.0' });
+  const server = new McpServer({ name: 'agent-notebook', version: '0.2.0' });
+  const router = new Router(vault);
 
   const guarded = (scope, pathOf, fn) => async (args) => {
     const target = pathOf ? pathOf(args) : '';
@@ -27,6 +29,66 @@ export function buildMcpServer({ vault, auth, principal }) {
     description: 'Show the identity, scopes (read/write/admin) and folder restrictions of the current token.',
     inputSchema: {}
   }, async () => text({ ...principal, vault: vault.root }));
+
+  server.registerTool('notebook_capture', {
+    title: 'Capture (the one call you need)',
+    description: 'Keep something: a finding, idea, health/reading/finance/thinking note, alpha lead, topic. The notebook routes it to the right notebook by keywords and learned rules, or to 收件箱 if unsure. Journals get a timestamped entry on today\'s page, boards get a card, page notebooks get a page. Only pass `notebook` when the owner said where it belongs. Returns where it went plus related notes to [[link]].',
+    inputSchema: {
+      text: z.string().describe('The content to keep (Markdown ok). Use [[Title]] to link other notes.'),
+      title: z.string().optional().describe('Short headline (≤60 chars). Defaults to the first line.'),
+      notebook: z.string().optional().describe('Notebook folder, only when known (see notebook_list_notebooks)'),
+      tags: z.array(z.string()).optional(),
+      source: z.string().optional().describe('Your agent name (defaults to the token name)'),
+      properties: z.record(z.any()).optional().describe('Structured facts: {url, amount, ticker, weight…}'),
+      date: z.string().optional().describe('YYYY-MM-DD for journal entries that belong to another day')
+    }
+  }, guarded('write', (a) => a.notebook || '', function capture_note(args) {
+    return capture(vault, router, { ...args, source: args.source || principal.name });
+  }));
+
+  server.registerTool('notebook_list_notebooks', {
+    title: 'List notebooks',
+    description: 'All notebooks (areas) with kind (board/journal/pages), keywords, description and columns. Call once to learn the owner\'s areas.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true }
+  }, guarded('read', null, function list_notebooks() {
+    return vault.listNotebooks().filter((n) => auth.can(principal, 'read', n.folder));
+  }));
+
+  server.registerTool('notebook_today', {
+    title: "Today's digest",
+    description: 'Everything recorded on a day (default today), grouped by notebook, journal bodies inline. Use when the owner asks what was recorded / collected.',
+    inputSchema: { date: z.string().optional().describe('YYYY-MM-DD') },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', null, function today({ date }) {
+    const d = digest(vault, date);
+    return { ...d, groups: d.groups.filter((g) => auth.can(principal, 'read', g.notebook.folder)) };
+  }));
+
+  server.registerTool('notebook_move_note', {
+    title: 'Move note to a notebook',
+    description: 'Move a note into another notebook (e.g. out of 收件箱). The router learns from the move.',
+    inputSchema: { path: z.string(), notebook: z.string().describe('Target notebook folder') }
+  }, guarded('write', (a) => a.notebook, function move_note({ path, notebook }) {
+    const before = vault.getNote(path);
+    const moved = vault.moveNote(path, notebook);
+    router.learn({ title: before.title, tags: before.properties.tags || [], source: before.properties.source }, notebook);
+    return moved;
+  }));
+
+  server.registerTool('notebook_create_notebook', {
+    title: 'Create notebook',
+    description: 'Create a new area. kind: board (kanban columns), journal (one page per day), pages (one page per note). Only when the owner asks.',
+    inputSchema: {
+      folder: z.string(), title: z.string().optional(), icon: z.string().optional(),
+      kind: z.enum(['board', 'journal', 'pages']).optional().default('pages'),
+      description: z.string().optional().describe('What belongs here — used for routing'),
+      keywords: z.array(z.string()).optional().describe('Routing keywords'),
+      columns: z.array(z.string()).optional()
+    }
+  }, guarded('write', (a) => a.folder, function create_notebook(args) {
+    return vault.createNotebook(args);
+  }));
 
   server.registerTool('notebook_list_boards', {
     title: 'List boards',
@@ -66,11 +128,11 @@ export function buildMcpServer({ vault, auth, principal }) {
 
   server.registerTool('notebook_read_note', {
     title: 'Read note',
-    description: 'Read one note: frontmatter properties and Markdown body.',
+    description: 'Read one note: properties, Markdown body, resolved [[links]] and backlinks.',
     inputSchema: { path: z.string().describe('Vault-relative path ending in .md') },
     annotations: { readOnlyHint: true }
   }, guarded('read', (a) => a.path, function read_note({ path }) {
-    return vault.getNote(path);
+    return vault.getNoteFull(path);
   }));
 
   server.registerTool('notebook_search', {
@@ -84,7 +146,7 @@ export function buildMcpServer({ vault, auth, principal }) {
 
   server.registerTool('notebook_create_note', {
     title: 'Create note / card',
-    description: 'Create a Markdown note. If the folder is a board, the note becomes a card (status defaults to the first column). Set `source` to your agent name so the owner can see who wrote it.',
+    description: 'Low-level: create a note in an exact folder. Prefer notebook_capture, which routes automatically. If the folder is a board the note becomes a card.',
     inputSchema: {
       folder: z.string().describe('Target folder, e.g. "Alpha看板" or "灵感"'),
       title: z.string(),
