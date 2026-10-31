@@ -178,7 +178,7 @@ function assignChips(note, { onDone } = {}) {
 
 async function viewHome(main) {
   const page = el('div', { class: 'page' });
-  page.append(el('h1', { class: 'page-title', style: 'font-size:32px' }, '今天'));
+  page.append(el('h1', { class: 'page-title' }, '今天'));
   page.append(captureBox());
 
   // agents banner
@@ -218,10 +218,10 @@ async function viewHome(main) {
   // notebooks grid
   page.append(el('h2', { style: 'font-size:16px;margin:28px 0 8px' }, '笔记本'));
   const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:0 0 20px' });
-  for (const nb of state.notebooks) grid.append(el('a', { class: 'card-box', href: nbHref(nb.folder), style: 'margin:0;padding:12px 14px' },
+  for (const nb of state.notebooks) grid.append(el('a', { class: 'card-box', href: nbHref(nb.folder), style: 'margin:0;padding:14px 16px' },
     el('div', { style: 'display:flex;align-items:center;gap:8px' }, el('span', { style: 'font-size:22px' }, nb.icon), el('span', { style: 'font-weight:600' }, nb.title), el('span', { class: 'muted', style: 'margin-left:auto;font-size:12px' }, nb.count)),
     el('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, KIND_LABEL[nb.kind] + (nb.description ? ' · ' + nb.description.slice(0, 40) : ''))));
-  grid.append(el('a', { class: 'card-box', href: '#', style: 'margin:0;padding:12px 14px;color:var(--text-3)', onclick: (e) => { e.preventDefault(); notebookDialog(); } }, el('div', { style: 'font-weight:600' }, '＋ 新建笔记本')));
+  grid.append(el('a', { class: 'card-box', href: '#', style: 'margin:0;padding:14px 16px;color:var(--text-3);box-shadow:inset 0 0 0 1.5px var(--border-2);background:transparent', onclick: (e) => { e.preventDefault(); notebookDialog(); } }, el('div', { style: 'font-weight:600' }, '＋ 新建笔记本')));
   page.append(grid);
   main.append(topbar([{ label: '今天' }]), page);
 }
@@ -287,18 +287,19 @@ async function viewNotebook(main, folder) {
   let view = localStorage.getItem('view:' + folder) || defaultView;
   if ((view === 'kanban' && nb.kind !== 'board') || (view === 'chart' && !hasChart)) view = defaultView;
   const page = el('div', { class: 'page wide' });
-  page.append(el('div', { style: 'display:flex;align-items:center;gap:12px' }, el('div', { class: 'page-icon', style: 'font-size:44px;margin:0' }, nb.icon),
+  page.append(el('div', { style: 'display:flex;align-items:center;gap:12px' }, el('div', { class: 'page-icon', style: 'font-size:40px;margin:0' }, nb.icon),
     el('div', {}, el('h1', { class: 'page-title', style: 'margin:0' }, nb.title), el('div', { class: 'muted', style: 'font-size:13px' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词：' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`))));
   if (nb.description) page.append(el('p', { class: 'page-desc', style: 'margin-top:8px' }, nb.description));
 
   const setDate = (d) => { state.nbDate = { ...(state.nbDate || {}), [folder]: d }; route(); };
   const setView = (v) => { localStorage.setItem('view:' + folder, v); route(); };
   const tb = el('div', { class: 'toolbar' },
-    nb.kind === 'board' && el('button', { class: 'btn small' + (view === 'kanban' ? ' active' : ''), onclick: () => setView('kanban') }, '▦ 看板'),
-    el('button', { class: 'btn small' + (view === 'timeline' ? ' active' : ''), onclick: () => setView('timeline') }, '☷ 时间线'),
-    el('button', { class: 'btn small' + (view === 'table' ? ' active' : ''), onclick: () => setView('table') }, '☰ 表格'),
-    hasChart && el('button', { class: 'btn small' + (view === 'chart' ? ' active' : ''), onclick: () => setView('chart') }, '📈 图表'),
-    el('span', { style: 'width:12px' }),
+    el('div', { class: 'segmented' },
+      nb.kind === 'board' && el('button', { class: 'btn small' + (view === 'kanban' ? ' active' : ''), onclick: () => setView('kanban') }, '看板'),
+      el('button', { class: 'btn small' + (view === 'timeline' ? ' active' : ''), onclick: () => setView('timeline') }, '时间线'),
+      el('button', { class: 'btn small' + (view === 'table' ? ' active' : ''), onclick: () => setView('table') }, '表格'),
+      hasChart && el('button', { class: 'btn small' + (view === 'chart' ? ' active' : ''), onclick: () => setView('chart') }, '图表')),
+    el('span', { style: 'width:8px' }),
     el('button', { class: 'btn small' + (dateFilter === today() ? ' active' : ''), onclick: () => setDate(dateFilter === today() ? '' : today()) }, '今天'),
     el('input', { type: 'date', value: dateFilter, onchange: (e) => setDate(e.target.value) }),
     dateFilter && el('button', { class: 'btn small', onclick: () => setDate('') }, '✕'),
@@ -361,7 +362,7 @@ function chartView(folder, nb, mx) {
   const range = localStorage.getItem(rangeKey) || '30';
   box.append(el('div', { class: 'toolbar', style: 'border:none;margin-bottom:4px;padding-top:0' },
     el('span', { class: 'muted', style: 'font-size:13px' }, '时间范围'),
-    RANGES.map(([v, label]) => el('button', { class: 'btn small' + (range === v ? ' active' : ''), onclick: () => { localStorage.setItem(rangeKey, v); route(); } }, label)),
+    el('div', { class: 'segmented' }, RANGES.map(([v, label]) => el('button', { class: 'btn small' + (range === v ? ' active' : ''), onclick: () => { localStorage.setItem(rangeKey, v); route(); } }, label))),
     el('div', { class: 'spacer' }),
     el('span', { class: 'muted', style: 'font-size:12px' }, mx?.keys?.length ? `${mx.keys.length} 个数字属性` : '')));
   if (!mx || !mx.keys.length) {
@@ -738,7 +739,7 @@ async function viewSettings(main) {
   const tokBox = el('div', { class: 'card-box' });
   if (tokens.length) {
     const t = el('table', { style: 'width:100%;font-size:14px;border-collapse:collapse' });
-    t.append(el('thead', {}, el('tr', {}, ...['名称', '前缀', '权限', '文件夹', '最近使用', ''].map((h) => el('th', { style: 'text-align:left;color:var(--text-3);font-weight:500;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--border-2)' }, h)))));
+    t.append(el('thead', {}, el('tr', {}, ...['名称', '前缀', '权限', '文件夹', '最近使用', ''].map((h) => el('th', {}, h)))));
     for (const tk of tokens) {
       t.append(el('tr', {}, el('td', { style: 'padding:6px;font-weight:500' }, tk.name), el('td', { style: 'padding:6px;font-family:var(--mono);font-size:12px' }, tk.prefix + '…'),
         el('td', { style: 'padding:6px' }, tk.scopes.map((s) => el('span', { class: 'chip status' }, s))), el('td', { style: 'padding:6px' }, tk.folders.map((f) => el('span', { class: 'chip' }, f === '*' ? '全部' : f))),
@@ -774,7 +775,7 @@ async function viewSettings(main) {
     if (!list.length) return;
     rulesBox.append(el('div', { style: 'font-weight:600;font-size:13px;margin:4px 0 6px' }, `${title} · ${list.length}`));
     const t = el('table', { style: 'width:100%;font-size:14px;border-collapse:collapse;margin-bottom:14px' });
-    t.append(el('thead', {}, el('tr', {}, ...[keyLabel, '归入', ''].map((h) => el('th', { style: 'text-align:left;color:var(--text-3);font-weight:500;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--border-2)' }, h)))));
+    t.append(el('thead', {}, el('tr', {}, ...[keyLabel, '归入', ''].map((h) => el('th', {}, h)))));
     for (const r of list) {
       const nb = nbOf(r.folder);
       t.append(el('tr', {}, el('td', { style: 'padding:5px 6px' }, keyRender(r)),
@@ -933,7 +934,7 @@ async function viewGraph(main, focus) {
     }
   };
   drawLegend();
-  const search = el('input', { type: 'search', placeholder: '高亮标题包含…', style: 'border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:13px;background:var(--bg);width:170px' });
+  const search = el('input', { type: 'search', placeholder: '高亮标题包含…', style: 'font-size:13px;width:180px;height:27px;padding:3px 10px' });
   search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); paint(); });
   const orphanBtn = el('button', { class: 'btn small' + (showOrphans ? ' active' : ''), onclick: () => { showOrphans = !showOrphans; localStorage.setItem('graph:orphans', showOrphans ? '1' : '0'); orphanBtn.classList.toggle('active', showOrphans); rebuild(); } }, '显示未链接的笔记');
   page.append(el('div', { class: 'toolbar', style: 'border:none;padding-bottom:6px;margin-bottom:6px' }, legend, el('div', { class: 'spacer' }), search, orphanBtn, el('button', { class: 'btn small', onclick: () => { userView = false; rebuild(true); } }, '↻ 重新布局')));
