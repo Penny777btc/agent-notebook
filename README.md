@@ -94,6 +94,16 @@ Copy `skills/agent-notebook/` into `~/.claude/skills/` so Claude Code knows the 
 }
 ```
 
+### Deploy on a Linux server
+
+The notebook is a folder of code plus a folder of Markdown, so it moves to an always-on box in one script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Penny777btc/agent-notebook/main/scripts/deploy-linux.sh | bash
+```
+
+`scripts/deploy-linux.sh` installs Node 22 and Tailscale, clones this repo and the private vault repo (it prints a deploy key to add to the vault repo once), writes a systemd service bound to `127.0.0.1:3777`, and publishes it with `tailscale funnel` as `https://<host>.<tailnet>.ts.net`. Copy the old machine's `vault/.notebook/config.json` beside the vault to keep every token, the owner password and the AI settings; the script rebinds it to localhost and points backups at the deploy key. Agents on the same box (a Hermes or Muse VPS, say) can use `http://127.0.0.1:3777` directly.
+
 ### Remote agents (HTTP)
 
 Who wrote an entry is worked out per request, so one token can serve several agents: an explicit `source` (unless it merely repeats the token name) → the `X-Agent-Name` header → the MCP client's handshake name (Claude, Cursor, Codex…) → a recognisable `User-Agent` (Hermes, Grok, ChatGPT, iOS Shortcuts…) → the token name. The audit log records both the token and the detected agent.
