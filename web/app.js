@@ -980,8 +980,8 @@ function skillText(r) {
 我有一个私人笔记本（本地 Markdown，Obsidian 兼容），所有 agent 共用。值得保留的内容请记进去，不要只留在对话里。
 
 ## 怎么记（按你能做的方式选一种）
-1. 支持 MCP 连接器：服务器地址 ${r.tokenUrl} ，调用工具 notebook_capture { text, title?, tags?, properties?, source: "${r.name}" }。
-2. 能发 HTTP 请求：POST ${r.base}/api/capture ，请求头 Authorization: Bearer ${r.token} ，JSON 正文 { "text": "...", "title": "...", "tags": [], "properties": {}, "source": "${r.name}" }。
+1. 支持 MCP 连接器：服务器地址 ${r.tokenUrl} ，调用工具 notebook_capture { text, title?, tags?, properties?, source: "<你的名字>" }。
+2. 能发 HTTP 请求：POST ${r.base}/api/capture ，请求头 Authorization: Bearer ${r.token} 和 X-Agent-Name: <你的名字> ，JSON 正文 { "text": "...", "title": "...", "tags": [], "properties": {}, "source": "<你的名字>" }。
 3. 只能打开网址：访问 ${r.quickUrl}?text=<URL 编码后的内容> ，返回 JSON 里的 hint 就是结果。
 
 ## 什么时候记
@@ -991,7 +991,7 @@ function skillText(r) {
 ## 怎么写
 - 一次一条。title 是一句话结论（≤60 字），细节放 text（可用 Markdown）。
 - 数字一律放 properties：花钱 {"amount": 35}，体重 {"weight": 71.5}，步数 {"steps": 8000}，页数 {"pages": 40}，同类数字始终用同一个 key，这样会自动画成图表。
-- source 固定填 "${r.name}"。
+- source 填你自己的名字（比如 Hermes、Grok、Muse），不是 token 名；每个请求（包括改和删）都带请求头 X-Agent-Name: <你的名字>，笔记本靠它标注是谁写的、谁改的。
 - 不要自己选笔记本：系统按关键词和我教过的规则自动归类，拿不准会进收件箱由我分配。只有我明确说「记到 X」时才传 notebook。现有笔记本：
   - ${nbs}
 - 想引用已有笔记，在 text 里写 [[笔记标题]]。返回结果里的 related 是相似的已有笔记，明显同一主题就别重复新建。
@@ -1051,7 +1051,7 @@ async function viewAgents(main) {
   section('已接入', data.agents.filter((a) => a.connected), '再次接入会生成新的 token 并覆盖该 agent 配置里的 agent-notebook 条目。');
   section('需要在应用内手动添加', data.agents.filter((a) => a.detected && !a.canWrite), '这些应用的 MCP 设置在它们自己的界面里。点「生成配置」拿到地址和 token，粘贴进去即可。');
 
-  page.append(el('h2', {}, '其他 agent（Hermes、Muse、自写的 bot…）'), el('p', {}, '任何支持 MCP 的 agent 都能接入。起个名字生成 token，然后把下面给出的配置粘到它的 MCP 设置里。'));
+  page.append(el('h2', {}, '其他 agent（Hermes、Muse、自写的 bot…）'), el('p', {}, '任何支持 MCP 或能发 HTTP 请求的 agent 都能接入。起个名字生成 token，把下面的 Skill 贴给它即可。一个 token 给几个 agent 共用也行：记录上标的是 agent 自报的名字（source / X-Agent-Name），MCP 客户端会按握手里的名字识别，都没有才显示 token 名。'));
   const name = el('input', { type: 'text', placeholder: '例如 hermes、muse、my-bot' });
   const sWrite = el('input', { type: 'checkbox', checked: true });
   const folders = el('input', { type: 'text', placeholder: '留空 = 全部；或填 Alpha看板, 灵感' });
@@ -1316,7 +1316,7 @@ async function viewActivity(main) {
   const list = el('div', { class: 'audit' });
   list.append(el('div', { class: 'row', style: 'color:var(--text-3);font-size:12px' }, el('div', {}, '时间'), el('div', {}, 'Agent'), el('div', {}, '操作'), el('div', {}, '对象')));
   for (const r of rows) {
-    list.append(el('div', { class: 'row' }, el('div', { class: 'ts' }, fmtTime(r.ts)), el('div', {}, el('span', { class: 'chip source' }, r.agent)),
+    list.append(el('div', { class: 'row' }, el('div', { class: 'ts' }, fmtTime(r.ts)), el('div', {}, el('span', { class: 'chip source' }, r.source && r.source !== r.agent ? `${r.source} · ${r.agent}` : r.agent)),
       el('div', { class: 'act' + (r.action.includes('denied') ? ' denied' : '') }, r.action + (r.via ? ` · ${r.via}` : '') + (r.mode ? ` · ${r.mode}` : '')),
       el('div', { class: 'tgt' }, r.target ? el('a', { href: r.target.endsWith('.md') ? `#/note/${encodeURIComponent(r.target)}` : '#', onclick: (e) => { if (r.target.endsWith('.md')) { e.preventDefault(); openPeek(r.target); } } }, r.target) : '', r.error && el('div', { class: 'err', style: 'font-size:12px' }, r.error))));
   }

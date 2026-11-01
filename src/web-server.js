@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
+import { resolveSource } from './agent-id.js';
 import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
 import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
@@ -30,6 +31,12 @@ export function createApp({ vault, auth, backup }) {
     } else {
       req.principal = null;
     }
+    // Which agent is behind the token? Several agents may share one token; the label comes from
+    // an explicit source, the X-Agent-Name header or a recognisable User-Agent, else the token name.
+    const hints = { header: req.headers['x-agent-name'] || req.headers['x-agent'], userAgent: req.headers['user-agent'], principal: req.principal, knownNames: auth.listTokens().map((t) => t.name) };
+    req.sourceOf = (explicit) => req.principal?.kind === 'token' ? resolveSource({ ...hints, explicit }) : (explicit || req.principal?.name);
+    req.agent = req.sourceOf();
+    req.audit = (action, target, extra = {}) => auth.audit(req.principal, action, target, { ...(req.agent && req.agent !== req.principal?.name ? { source: req.agent } : {}), ...extra });
     next();
   });
 
@@ -66,8 +73,9 @@ export function createApp({ vault, auth, backup }) {
       if (!text) return res.status(400).json({ error: 'text is required: /api/quick/<token>?text=...' });
       auth.require(principal, 'write', q.notebook || '');
       const tags = Array.isArray(q.tags) ? q.tags : String(q.tags || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean);
-      const r = await capture(vault, router, { text, title: q.title || undefined, notebook: q.notebook || undefined, tags, source: q.source || principal.name }, captureOpts);
-      auth.audit(principal, 'capture', r.path, { via: 'quick', mode: r.mode, notebook: r.notebook.folder });
+      const source = resolveSource({ explicit: q.source, header: req.headers['x-agent-name'], userAgent: req.headers['user-agent'], principal, knownNames: auth.listTokens().map((t) => t.name) });
+      const r = await capture(vault, router, { text, title: q.title || undefined, notebook: q.notebook || undefined, tags, source }, captureOpts);
+      auth.audit(principal, 'capture', r.path, { via: 'quick', mode: r.mode, notebook: r.notebook.folder, ...(source !== principal.name ? { source } : {}) });
       if ((req.headers.accept || '').includes('text/html')) {
         res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已记入</title><body style="font-family:-apple-system,sans-serif;padding:40px 24px;color:#1d1d1f"><h2 style="margin:0 0 8px">${r.notebook.icon} 已记入「${esc(r.notebook.title)}」</h2><p style="color:#6e6e73">${esc(r.title)}</p><p style="color:#86868b;font-size:13px">${esc(r.hint)}</p></body>`);
       } else res.json({ ok: true, notebook: r.notebook, title: r.title, path: r.path, mode: r.mode, hint: r.hint, related: r.related });
@@ -95,7 +103,7 @@ export function createApp({ vault, auth, backup }) {
     if (!principal || principal.kind !== 'token') {
       return res.status(401).json({ error: 'Bearer token required for /mcp (or use /mcp/<token>)' });
     }
-    const server = buildMcpServer({ vault, auth, principal });
+    const server = buildMcpServer({ vault, auth, principal, hints: { header: req.headers['x-agent-name'] || req.headers['x-agent'], userAgent: req.headers['user-agent'] } });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close(); server.close(); });
     await server.connect(transport);
@@ -119,7 +127,7 @@ export function createApp({ vault, auth, backup }) {
   api.get('/notebooks', guard('read'), (req, res) => res.json(vault.listNotebooks().filter((n) => auth.can(req.principal, 'read', n.folder))));
   api.post('/notebooks', guard('write', (r) => r.body.folder), (req, res) => {
     const nb = vault.createNotebook(req.body);
-    auth.audit(req.principal, 'create_notebook', nb.folder, { via: 'web' });
+    req.audit('create_notebook', nb.folder, { via: 'web' });
     res.status(201).json(nb);
   });
   api.get('/notebooks/*', guard('read', notePath), (req, res) => {
@@ -131,7 +139,7 @@ export function createApp({ vault, auth, backup }) {
   });
   api.patch('/notebooks/*', guard('write', notePath), (req, res) => {
     const nb = vault.updateNotebook(notePath(req), req.body);
-    auth.audit(req.principal, 'update_notebook', nb.folder, { via: 'web', fields: Object.keys(req.body) });
+    req.audit('update_notebook', nb.folder, { via: 'web', fields: Object.keys(req.body) });
     res.json(nb);
   });
   // numeric series of a notebook (amount, weight …) for the chart view; registered before /notebooks/* would swallow it
@@ -149,8 +157,8 @@ export function createApp({ vault, auth, backup }) {
   });
   api.post('/capture', guard('write', (r) => r.body.notebook || ''), async (req, res, next) => {
     try {
-      const r = await capture(vault, router, { ...req.body, source: req.body.source || req.principal.name }, captureOpts);
-      auth.audit(req.principal, 'capture', r.path, { via: 'web', mode: r.mode, notebook: r.notebook.folder });
+      const r = await capture(vault, router, { ...req.body, source: req.sourceOf(req.body.source) }, captureOpts);
+      req.audit('capture', r.path, { via: 'web', mode: r.mode, notebook: r.notebook.folder });
       res.status(201).json(r);
     } catch (err) { next(err); }
   });
@@ -166,7 +174,7 @@ export function createApp({ vault, auth, backup }) {
       if (mode) cfg.ai.mode = mode;
       if (enabled !== undefined) cfg.ai.enabled = !!enabled;
     });
-    auth.audit(req.principal, 'update_ai', '', { model, enabled, mode, key: apiKey ? 'set' : clearKey ? 'cleared' : undefined });
+    req.audit('update_ai', '', { model, enabled, mode, key: apiKey ? 'set' : clearKey ? 'cleared' : undefined });
     res.json({ ...aiSettings(auth), models: AI_MODELS });
   });
   api.post('/ai/test', guard('admin'), async (req, res) => {
@@ -177,7 +185,7 @@ export function createApp({ vault, auth, backup }) {
     try {
       if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里填 API key' });
       const r = await organizeInbox(vault, router, auth, { paths: req.body?.paths, log: aiLog });
-      auth.audit(req.principal, 'ai_organize', vault.inboxFolder(), { via: 'web', moved: r.done.length, left: r.left.length });
+      req.audit('ai_organize', vault.inboxFolder(), { via: 'web', moved: r.done.length, left: r.left.length });
       res.json(r);
     } catch (err) { next(err); }
   });
@@ -186,7 +194,7 @@ export function createApp({ vault, auth, backup }) {
     const before = vault.getNote(p);
     const moved = vault.moveNote(p, folder);
     if (learn !== false) router.learn({ title: before.title, tags: before.properties.tags || [], source: before.properties.source }, folder);
-    auth.audit(req.principal, 'move_note', moved.path, { via: 'web', from: before.folder, learn: learn !== false });
+    req.audit('move_note', moved.path, { via: 'web', from: before.folder, learn: learn !== false });
     res.json(moved);
   });
   api.get('/classify', guard('read'), (req, res) => res.json(router.classify({ text: req.query.text || '', title: req.query.title || '' })));
@@ -194,13 +202,13 @@ export function createApp({ vault, auth, backup }) {
   api.get('/rules', guard('admin'), (req, res) => res.json(router.listRules()));
   api.post('/rules/forget', guard('admin'), (req, res) => {
     const left = router.forget(req.body || {});
-    auth.audit(req.principal, 'forget_rule', `${req.body?.type}:${req.body?.key || ''}`, { via: 'web', folder: req.body?.folder });
+    req.audit('forget_rule', `${req.body?.type}:${req.body?.key || ''}`, { via: 'web', folder: req.body?.folder });
     res.json(left);
   });
   api.get('/boards', guard('read'), (req, res) => res.json(vault.listBoards()));
   api.post('/boards', guard('write', (r) => r.body.folder), (req, res) => {
     const b = vault.createBoard(req.body);
-    auth.audit(req.principal, 'create_board', b.folder, { via: 'web' });
+    req.audit('create_board', b.folder, { via: 'web' });
     res.status(201).json(b);
   });
   api.get('/boards/*', guard('read', notePath), (req, res) => res.json(vault.getBoard(notePath(req), { date: req.query.date })));
@@ -211,26 +219,26 @@ export function createApp({ vault, auth, backup }) {
   api.get('/search', guard('read'), (req, res) => res.json(vault.search(req.query.q, { limit: 50 }).filter((n) => auth.can(req.principal, 'read', n.path))));
   api.post('/notes', guard('write', (r) => r.body.folder || ''), (req, res) => {
     const { folder, title, body, ...properties } = req.body;
-    const note = vault.createNote({ folder, title, body, properties: { source: req.principal.name, ...properties } });
-    auth.audit(req.principal, 'create_note', note.path, { via: 'web' });
+    const note = vault.createNote({ folder, title, body, properties: { ...properties, source: req.sourceOf(properties.source) } });
+    req.audit('create_note', note.path, { via: 'web' });
     res.status(201).json(note);
   });
   api.get('/notes/*', guard('read', notePath), (req, res) => res.json(vault.getNoteFull(notePath(req))));
   api.patch('/notes/*', guard('write', notePath), (req, res) => {
     const { title, body, append, ...properties } = req.body;
     const note = vault.updateNote(notePath(req), { title, body, append, properties });
-    auth.audit(req.principal, 'update_note', note.path, { via: 'web', fields: Object.keys(req.body) });
+    req.audit('update_note', note.path, { via: 'web', fields: Object.keys(req.body) });
     res.json(note);
   });
   // one entry inside a journal day page: PATCH to edit, with remove:true to delete
   api.patch('/entries/*', guard('write', notePath), (req, res) => {
     const r = vault.updateJournalEntry(notePath(req), req.body || {});
-    auth.audit(req.principal, req.body?.remove ? 'delete_entry' : 'update_entry', notePath(req), { via: 'web', time: req.body?.time, match: req.body?.match });
+    req.audit(req.body?.remove ? 'delete_entry' : 'update_entry', notePath(req), { via: 'web', time: req.body?.time, match: req.body?.match });
     res.json(r);
   });
   api.delete('/notes/*', guard('write', notePath), (req, res) => {
     const r = vault.deleteNote(notePath(req));
-    auth.audit(req.principal, 'delete_note', r.deleted, { via: 'web' });
+    req.audit('delete_note', r.deleted, { via: 'web' });
     res.json(r);
   });
 
@@ -239,7 +247,7 @@ export function createApp({ vault, auth, backup }) {
     getAgent(req.params.id);
     const { scopes, folders, skill } = req.body || {};
     const r = connectAgent({ id: req.params.id, auth, vault: vault.root, scopes: scopes?.length ? scopes : ['read', 'write'], folders: folders?.length ? folders : ['*'], skill: skill !== false });
-    auth.audit(req.principal, 'connect_agent', req.params.id, { tokenName: r.tokenName, configPath: r.configPath });
+    req.audit('connect_agent', req.params.id, { tokenName: r.tokenName, configPath: r.configPath });
     res.status(201).json(r);
   });
   api.post('/agents/snippets', guard('admin'), (req, res) => {
@@ -247,9 +255,9 @@ export function createApp({ vault, auth, backup }) {
     const { name, scopes, folders, replace } = req.body || {};
     const exists = auth.listTokens().some((t) => t.name === name);
     if (exists && !replace) return res.status(409).json({ error: `token "${name}" already exists`, exists: true });
-    if (exists) { auth.revokeToken(name); auth.audit(req.principal, 'revoke_token', name, { via: 'agents', reason: 'regenerated' }); }
+    if (exists) { auth.revokeToken(name); req.audit('revoke_token', name, { via: 'agents', reason: 'regenerated' }); }
     const t = auth.createToken(name, { scopes: scopes?.length ? scopes : ['read', 'write'], folders: (folders || []).filter(Boolean) });
-    auth.audit(req.principal, 'create_token', name, { scopes: t.scopes, folders: t.folders, via: 'agents', replaced: exists });
+    req.audit('create_token', name, { scopes: t.scopes, folders: t.folders, via: 'agents', replaced: exists });
     const entry = serverEntry({ token: t.token, vault: vault.root });
     // use the address the owner is browsing from (a tunnel host when set up remotely), else loopback
     const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
@@ -264,7 +272,7 @@ export function createApp({ vault, auth, backup }) {
     if (clearPassword) auth.setPassword('');
     else if (password !== undefined && password !== '') auth.setPassword(password);
     if (lan !== undefined) auth.update((cfg) => { cfg.host = lan ? '0.0.0.0' : '127.0.0.1'; });
-    auth.audit(req.principal, 'update_access', 'web', { password: password ? 'set' : clearPassword ? 'cleared' : undefined, lan });
+    req.audit('update_access', 'web', { password: password ? 'set' : clearPassword ? 'cleared' : undefined, lan });
     res.json(accessSettings(req));
   });
   function accessSettings(req) {
@@ -279,12 +287,12 @@ export function createApp({ vault, auth, backup }) {
   api.post('/tokens', guard('admin'), (req, res) => {
     const { name, scopes, folders } = req.body;
     const t = auth.createToken(name, { scopes, folders: (folders || []).filter(Boolean) });
-    auth.audit(req.principal, 'create_token', name, { scopes: t.scopes, folders: t.folders });
+    req.audit('create_token', name, { scopes: t.scopes, folders: t.folders });
     res.status(201).json(t);
   });
   api.delete('/tokens/:name', guard('admin'), (req, res) => {
     auth.revokeToken(req.params.name);
-    auth.audit(req.principal, 'revoke_token', req.params.name);
+    req.audit('revoke_token', req.params.name);
     res.json({ ok: true });
   });
   api.post('/backup/run', guard('admin'), async (req, res) => res.json(await backup.run('manual')));

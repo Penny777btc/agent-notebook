@@ -4,20 +4,25 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Router, capture, digest } from './notebooks.js';
 import { metrics } from './metrics.js';
+import { resolveSource } from './agent-id.js';
 
 const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = (err) => ({ isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] });
 
-export function buildMcpServer({ vault, auth, principal }) {
+export function buildMcpServer({ vault, auth, principal, hints = {} }) {
   const server = new McpServer({ name: 'agent-notebook', version: '0.2.0' });
   const router = new Router(vault);
+  // The agent's label: explicit `source`, X-Agent-Name header, the client's own name from the MCP
+  // handshake (Claude, Cursor, Codex…), a recognisable User-Agent, else the token name.
+  const sourceOf = (explicit) => resolveSource({ explicit, header: hints.header, userAgent: hints.userAgent, clientInfo: server.server.getClientVersion?.(), principal, knownNames: auth.listTokens().map((t) => t.name) });
+  const auditExtra = () => { const s = sourceOf(); return s !== principal.name ? { source: s } : {}; };
 
   const guarded = (scope, pathOf, fn) => async (args) => {
     const target = pathOf ? pathOf(args) : '';
     try {
       auth.require(principal, scope, target);
       const result = await fn(args);
-      if (scope === 'write') auth.audit(principal, fn.name || 'write', target, { via: 'mcp', args: compact(args) });
+      if (scope === 'write') auth.audit(principal, fn.name || 'write', target, { via: 'mcp', ...auditExtra(), args: compact(args) });
       return text(result);
     } catch (err) {
       auth.audit(principal, `${scope}:denied`, target, { via: 'mcp', error: err.message });
@@ -29,7 +34,7 @@ export function buildMcpServer({ vault, auth, principal }) {
     title: 'Who am I',
     description: 'Show the identity, scopes (read/write/admin) and folder restrictions of the current token.',
     inputSchema: {}
-  }, async () => text({ ...principal, vault: vault.root }));
+  }, async () => text({ ...principal, agent: sourceOf(), vault: vault.root }));
 
   server.registerTool('notebook_capture', {
     title: 'Capture (the one call you need)',
@@ -39,12 +44,12 @@ export function buildMcpServer({ vault, auth, principal }) {
       title: z.string().optional().describe('Short headline (≤60 chars). Defaults to the first line.'),
       notebook: z.string().optional().describe('Notebook folder, only when known (see notebook_list_notebooks)'),
       tags: z.array(z.string()).optional(),
-      source: z.string().optional().describe('Your agent name (defaults to the token name)'),
+      source: z.string().optional().describe('Your own agent name, e.g. Hermes (detected from the client when omitted)'),
       properties: z.record(z.any()).optional().describe('Structured facts: {url, amount, ticker, weight…}'),
       date: z.string().optional().describe('YYYY-MM-DD for journal entries that belong to another day')
     }
   }, guarded('write', (a) => a.notebook || '', function capture_note(args) {
-    return capture(vault, router, { ...args, source: args.source || principal.name }, { auth, log: (e) => auth.audit({ name: 'ai' }, e.event, e.notebook || '', e) });
+    return capture(vault, router, { ...args, source: sourceOf(args.source) }, { auth, log: (e) => auth.audit({ name: 'ai' }, e.event, e.notebook || '', e) });
   }));
 
   server.registerTool('notebook_list_notebooks', {
@@ -170,11 +175,11 @@ export function buildMcpServer({ vault, auth, principal }) {
       body: z.string().optional().default('').describe('Markdown body'),
       status: z.string().optional().describe('Board column name'),
       tags: z.array(z.string()).optional(),
-      source: z.string().optional().describe('Your agent name (defaults to the token name)'),
+      source: z.string().optional().describe('Your own agent name, e.g. Hermes (detected from the client when omitted)'),
       properties: z.record(z.any()).optional().describe('Extra frontmatter properties, e.g. {url, score, ticker}')
     }
   }, guarded('write', (a) => a.folder, function create_note({ folder, title, body, status, tags, source, properties }) {
-    return vault.createNote({ folder, title, body, properties: { ...(properties || {}), status, tags, source: source || principal.name } });
+    return vault.createNote({ folder, title, body, properties: { ...(properties || {}), status, tags, source: sourceOf(source) } });
   }));
 
   server.registerTool('notebook_update_note', {

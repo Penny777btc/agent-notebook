@@ -96,6 +96,8 @@ Copy `skills/agent-notebook/` into `~/.claude/skills/` so Claude Code knows the 
 
 ### Remote agents (HTTP)
 
+Who wrote an entry is worked out per request, so one token can serve several agents: an explicit `source` (unless it merely repeats the token name) → the `X-Agent-Name` header → the MCP client's handshake name (Claude, Cursor, Codex…) → a recognisable `User-Agent` (Hermes, Grok, ChatGPT, iOS Shortcuts…) → the token name. The audit log records both the token and the detected agent.
+
 While `serve` runs, `POST http://127.0.0.1:3777/mcp` with `Authorization: Bearer nb_xxx` is a Streamable HTTP MCP endpoint. Clients that cannot set headers — the **custom connectors in the Claude and ChatGPT phone apps** — use the token-in-URL form instead: `https://<your-tunnel-host>/mcp/nb_xxx` (shown as 方式 A′ on the 接入 Agent page; over HTTPS it is as private as the header). Hosted agents (a Grok bot, a Zapier/Make flow, …) need a public HTTPS address: a Cloudflare named tunnel on your own domain is the durable option, `cloudflared tunnel --url http://127.0.0.1:3777` the quick one (the address changes on every run).
 
 ### The easiest way: paste a skill

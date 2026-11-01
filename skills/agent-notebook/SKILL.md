@@ -15,7 +15,7 @@ Your job is to **capture, not to organise** — the notebook decides where thing
 notebook_capture { text: "<what to keep, Markdown ok>", title?: "<short headline>", tags?: [...], source?: "<your agent name>" }
 ```
 
-- Pass the content as `text`. Title is optional (first line is used). Always set `source` to your agent name (defaults to the token name).
+- Pass the content as `text`. Title is optional (first line is used). Set `source` to **your own** agent name (Hermes, Grok, Muse…), never the token's name — a token may be shared by several agents. Over HTTP also send the header `X-Agent-Name: <your name>` on every request (edits and deletes too) so the audit log names you; MCP clients are recognised from their handshake name when `source` is omitted.
 - **Do not pick a folder yourself.** The notebook routes the text to the right notebook by its keywords and by what the owner taught it. The result tells you where it went (`mode: auto`), or that it landed in **收件箱** (`mode: inbox`) with `candidates` the owner will confirm.
 - Only pass `notebook` when the owner said where it belongs ("记到财务里") or when it is obvious from the conversation. Use the folder names from `notebook_list_notebooks`.
 - Notebook kinds decide the shape, you don't have to care:
