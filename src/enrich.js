@@ -19,10 +19,17 @@ const DEFAULT_MODEL = 'claude-opus-5-5';
 export const AI_PROVIDERS = [
   { id: 'claude-cli', label: '本机 Claude Code（用已登录的账号，不用 key）', cli: 'claude' },
   { id: 'codex-cli', label: '本机 Codex CLI（用已登录的 ChatGPT 账号）', cli: 'codex' },
+  { id: 'grok-cli', label: '本机 Grok Build（用已登录的 grok.com 账号）', cli: 'grok' },
   { id: 'api', label: 'Anthropic API key' }
 ];
 
-const CLI_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.npm-global/bin'), path.join(os.homedir(), 'bin')];
+const CLI_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.npm-global/bin'), path.join(os.homedir(), 'bin'), path.join(os.homedir(), '.grok/bin')];
+export const GROK_MODELS = [
+  { id: '', label: '默认（grok.com 当前默认模型）' },
+  { id: 'grok-4.7-build-fast', label: 'grok-4.7-build-fast（快）' },
+  { id: 'grok-4.7', label: 'grok-4.7' },
+  { id: 'magpie/claude/claude-haiku-5-5', label: 'Claude Haiku 5.5（经 Grok 转发）' }
+];
 const cliCache = new Map(); // name → { at, info }
 
 /** Find a CLI on PATH or in the usual install dirs, with its version. Cached for 10 minutes. */
@@ -47,7 +54,7 @@ export function detectCli(name) {
  *  session or a host-provided auth token would override the user's own login). */
 function cliEnv() {
   const env = {};
-  for (const [k, v] of Object.entries(process.env)) if (!/^(CLAUDE|ANTHROPIC_|CODEX_|OPENAI_)/.test(k)) env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) if (!/^(CLAUDE|ANTHROPIC_|CODEX_|OPENAI_|GROK_)/.test(k)) env[k] = v;
   env.PATH = [...new Set([...(env.PATH || '').split(':'), ...CLI_DIRS])].filter(Boolean).join(':');
   return env;
 }
@@ -55,9 +62,9 @@ function cliEnv() {
 export function aiSettings(auth) {
   const c = auth.config.ai || {};
   const provider = AI_PROVIDERS.some((p) => p.id === c.provider) ? c.provider : (c.apiKey ? 'api' : 'claude-cli');
-  const cli = { claude: detectCli('claude'), codex: detectCli('codex') };
-  const configured = provider === 'api' ? !!c.apiKey : provider === 'claude-cli' ? !!cli.claude : !!cli.codex;
-  return { provider, enabled: !!c.enabled && configured, configured, cli, keyPrefix: c.apiKey ? c.apiKey.slice(0, 10) + '…' : null, hasKey: !!c.apiKey, model: c.model || DEFAULT_MODEL, baseUrl: c.baseUrl || null, mode: c.mode || 'unsure' };
+  const cli = { claude: detectCli('claude'), codex: detectCli('codex'), grok: detectCli('grok') };
+  const configured = provider === 'api' ? !!c.apiKey : provider === 'claude-cli' ? !!cli.claude : provider === 'grok-cli' ? !!cli.grok : !!cli.codex;
+  return { provider, enabled: !!c.enabled && configured, configured, cli, keyPrefix: c.apiKey ? c.apiKey.slice(0, 10) + '…' : null, hasKey: !!c.apiKey, model: c.model || DEFAULT_MODEL, grokModel: c.grokModel || '', baseUrl: c.baseUrl || null, mode: c.mode || 'unsure' };
 }
 
 function client(auth) {
@@ -87,6 +94,18 @@ export async function complete(auth, { system, user, maxTokens = 800 }) {
     if (json.is_error || json.subtype !== 'success') throw new Error('claude 返回错误：' + String(json.result || json.subtype || json.terminal_reason).slice(0, 200));
     const model = Object.keys(json.modelUsage || {})[0] || s.model;
     return { text: String(json.result || ''), model, usage: json.usage ? { input: json.usage.input_tokens, output: json.usage.output_tokens } : undefined, cost: json.total_cost_usd };
+  }
+  if (s.provider === 'grok-cli') {
+    if (!s.cli.grok) throw new Error('本机没有找到 grok 命令：先安装 Grok Build 并登录（终端运行 grok）');
+    // headless: no tools, one turn, system prompt via --rules, the user text as the prompt argument
+    const args = ['-p', user, '--output-format', 'json', '--tools', '', '--max-turns', '1', '--disable-web-search', '--rules', system];
+    if (s.grokModel) args.push('-m', s.grokModel);
+    const { stdout } = await run(s.cli.grok.path, args, { timeout: 90000 });
+    const json = parseJson(stdout.slice(stdout.indexOf('{')));
+    if (!json) throw new Error('grok 输出无法解析：' + stdout.slice(0, 160));
+    if (json.type === 'error' || json.error) throw new Error('grok 返回错误：' + String(json.message || json.error).slice(0, 200));
+    const model = Object.keys(json.modelUsage || {})[0] || s.grokModel || 'grok';
+    return { text: String(json.text || ''), model, usage: json.usage ? { input: json.usage.input_tokens, output: json.usage.output_tokens } : undefined };
   }
   if (s.provider === 'codex-cli') {
     if (!s.cli.codex) throw new Error('本机没有找到 codex 命令：先安装 Codex CLI 并登录（终端运行 codex）');

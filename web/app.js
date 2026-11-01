@@ -923,8 +923,10 @@ async function viewSettings(main) {
   state.ai = ai;
   page.append(el('h2', {}, '智能归类（AI）'), el('p', {}, '不填也能用：系统靠关键词、学到的规则和「与各笔记本已有内容的相似度」归类。开启后，拿不准的记录会交给模型判断归属，并为没有标题的长记录提炼一句话标题、补标签和数字属性；收件箱也可一键「AI 整理」。最省事的是直接用本机已登录的 Claude Code：不用 key，走你现有的订阅。设置保存在本机 vault/.notebook/config.json（不进 git）。'));
   const isApi = ai.provider === 'api';
-  const cliInfo = ai.provider === 'claude-cli' ? ai.cli.claude : ai.provider === 'codex-cli' ? ai.cli.codex : null;
-  const cliName = ai.provider === 'codex-cli' ? 'codex' : 'claude';
+  const cliInfo = ai.provider === 'claude-cli' ? ai.cli.claude : ai.provider === 'codex-cli' ? ai.cli.codex : ai.provider === 'grok-cli' ? ai.cli.grok : null;
+  const cliName = ai.provider === 'codex-cli' ? 'codex' : ai.provider === 'grok-cli' ? 'grok' : 'claude';
+  const isGrok = ai.provider === 'grok-cli';
+  const grokSel = el('select', {}, (ai.grokModels || []).map((m) => el('option', { value: m.id, selected: m.id === (ai.grokModel || '') }, m.label)));
   const providerSel = el('select', {}, ai.providers.map((p) => el('option', { value: p.id, selected: p.id === ai.provider }, p.label)));
   const keyIn = el('input', { type: 'password', placeholder: ai.hasKey ? `已保存 ${ai.keyPrefix}，输入新 key 可替换` : 'sk-ant-…', autocomplete: 'off' });
   const modelSel = el('select', {}, ai.models.map((m) => el('option', { value: m.id, selected: m.id === ai.model }, m.label)));
@@ -937,16 +939,17 @@ async function viewSettings(main) {
   const cliStatus = !isApi && (cliInfo
     ? el('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px' }, el('span', { class: 'chip source' }, '已找到'), el('span', { style: 'font-family:var(--mono);font-size:12px' }, cliInfo.path), cliInfo.version && el('span', { class: 'muted', style: 'font-size:12px' }, cliInfo.version),
         !ai.enabled && el('button', { class: 'btn primary small', onclick: () => saveAi({ provider: ai.provider, enabled: true }) }, '开启'))
-    : el('div', {}, el('span', { class: 'err' }, `本机没找到 ${cliName} 命令。`), el('span', { class: 'muted', style: 'font-size:13px' }, cliName === 'claude' ? ' 安装并登录：终端运行 npm i -g @anthropic-ai/claude-code && claude ，登录后回到这里刷新。' : ' 安装并登录：终端运行 npm i -g @openai/codex && codex ，登录后回到这里刷新。')));
+    : el('div', {}, el('span', { class: 'err' }, `本机没找到 ${cliName} 命令。`), el('span', { class: 'muted', style: 'font-size:13px' }, cliName === 'claude' ? ' 安装并登录：终端运行 npm i -g @anthropic-ai/claude-code && claude ，登录后回到这里刷新。' : cliName === 'grok' ? ' 安装并登录：终端运行 curl -fsSL https://x.ai/cli/install.sh | bash 再运行 grok 登录，登录后回到这里刷新。' : ' 安装并登录：终端运行 npm i -g @openai/codex && codex ，登录后回到这里刷新。')));
   page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
     el('label', {}, '方式'), providerSel,
     isApi && el('label', {}, 'API key'), isApi && el('div', { class: 'row' }, keyIn, el('button', { class: 'btn primary', onclick: () => { if (!keyIn.value.trim()) { toast('先粘贴 key', true); return; } saveAi({ provider: 'api', apiKey: keyIn.value.trim(), enabled: true }); } }, ai.hasKey ? '替换' : '保存并开启'), ai.hasKey && el('button', { class: 'btn danger', onclick: () => { if (confirm('删除已保存的 API key？')) saveAi({ clearKey: true }); } }, '删除')),
     !isApi && el('label', {}, '本机 CLI'), cliStatus,
-    ai.provider !== 'codex-cli' && el('label', {}, '模型'), ai.provider !== 'codex-cli' && el('div', { class: 'row' }, modelSel, el('span', { class: 'muted', style: 'font-size:12px' }, isApi ? '一条记录约 1k token，Opus 约 ¥0.03/条，Haiku 约 ¥0.001/条' : '走 Claude Code 的登录账号，占用订阅额度，不另外计费；归类这种小活用 Haiku 足够')),
+    isGrok && el('label', {}, '模型'), isGrok && el('div', { class: 'row' }, grokSel, el('span', { class: 'muted', style: 'font-size:12px' }, '走 grok.com 的登录账号；归类这种小活选 build-fast 即可')),
+    ai.provider !== 'codex-cli' && !isGrok && el('label', {}, '模型'), ai.provider !== 'codex-cli' && !isGrok && el('div', { class: 'row' }, modelSel, el('span', { class: 'muted', style: 'font-size:12px' }, isApi ? '一条记录约 1k token，Opus 约 ¥0.03/条，Haiku 约 ¥0.001/条' : '走 Claude Code 的登录账号，占用订阅额度，不另外计费；归类这种小活用 Haiku 足够')),
     el('label', {}, '何时使用'), modeSel,
     el('label', {}, '开关'), el('div', { class: 'row' }, el('label', {}, enabledChk, ai.configured ? ' 启用 AI 归类' : isApi ? ' 启用 AI 归类（先保存 key）' : ` 启用 AI 归类（先安装并登录 ${cliName}）`)),
     el('div', { class: 'actions' },
-      el('button', { class: 'btn', onclick: () => saveAi({ provider: ai.provider, model: modelSel.value, mode: modeSel.value, enabled: enabledChk.checked }) }, '保存设置'),
+      el('button', { class: 'btn', onclick: () => saveAi({ provider: ai.provider, model: modelSel.value, grokModel: isGrok ? grokSel.value : undefined, mode: modeSel.value, enabled: enabledChk.checked }) }, '保存设置'),
       ai.configured && testBtn)),
     aiOut));
 
