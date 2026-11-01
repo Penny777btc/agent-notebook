@@ -9,7 +9,7 @@ import { resolveSource } from './agent-id.js';
 import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
 import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
-import { aiSettings, testConnection, AI_MODELS } from './enrich.js';
+import { AI_MODELS, AI_PROVIDERS, aiSettings, testConnection } from './enrich.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -163,19 +163,20 @@ export function createApp({ vault, auth, backup }) {
     } catch (err) { next(err); }
   });
   // ---- AI (optional) ------------------------------------------------------
-  api.get('/ai', guard('admin'), (req, res) => res.json({ ...aiSettings(auth), models: AI_MODELS }));
+  api.get('/ai', guard('admin'), (req, res) => res.json({ ...aiSettings(auth), models: AI_MODELS, providers: AI_PROVIDERS }));
   api.post('/ai', guard('admin'), (req, res) => {
-    const { apiKey, model, enabled, mode, clearKey } = req.body || {};
+    const { apiKey, model, enabled, mode, clearKey, provider } = req.body || {};
     auth.update((cfg) => {
       cfg.ai = cfg.ai || {};
+      if (provider && AI_PROVIDERS.some((p) => p.id === provider)) cfg.ai.provider = provider;
       if (clearKey) { delete cfg.ai.apiKey; cfg.ai.enabled = false; }
       if (apiKey) cfg.ai.apiKey = String(apiKey).trim();
       if (model) cfg.ai.model = model;
       if (mode) cfg.ai.mode = mode;
       if (enabled !== undefined) cfg.ai.enabled = !!enabled;
     });
-    req.audit('update_ai', '', { model, enabled, mode, key: apiKey ? 'set' : clearKey ? 'cleared' : undefined });
-    res.json({ ...aiSettings(auth), models: AI_MODELS });
+    req.audit('update_ai', '', { provider, model, enabled, mode, key: apiKey ? 'set' : clearKey ? 'cleared' : undefined });
+    res.json({ ...aiSettings(auth), models: AI_MODELS, providers: AI_PROVIDERS });
   });
   api.post('/ai/test', guard('admin'), async (req, res) => {
     try { res.json(await testConnection(auth)); }
@@ -183,7 +184,7 @@ export function createApp({ vault, auth, backup }) {
   });
   api.post('/ai/organize', guard('write', () => vault.inboxFolder() || ''), async (req, res, next) => {
     try {
-      if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里填 API key' });
+      if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里选择方式并开启' });
       const r = await organizeInbox(vault, router, auth, { paths: req.body?.paths, log: aiLog });
       req.audit('ai_organize', vault.inboxFolder(), { via: 'web', moved: r.done.length, left: r.left.length });
       res.json(r);

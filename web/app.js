@@ -230,7 +230,7 @@ function captureBox({ notebook } = {}) {
 }
 
 function aiOrganizeButton() {
-  if (!state.ai?.enabled) return el('a', { class: 'btn small', href: '#/settings', title: '在设置里填 API key 后，可一键让 AI 整理收件箱' }, '✨ 开启 AI 整理');
+  if (!state.ai?.enabled) return el('a', { class: 'btn small', href: '#/settings', title: '在设置里开启智能归类（可直接用本机已登录的 Claude Code），即可一键让 AI 整理收件箱' }, '✨ 开启 AI 整理');
   return el('button', { class: 'btn small primary', onclick: async (e) => {
     const b = e.currentTarget; b.disabled = true; b.textContent = '✨ 整理中…';
     try {
@@ -877,21 +877,33 @@ async function viewSettings(main) {
   // AI classification
   const ai = await get('/api/ai');
   state.ai = ai;
-  page.append(el('h2', {}, '智能归类（AI）'), el('p', {}, '不填也能用：系统靠关键词、学到的规则和「与各笔记本已有内容的相似度」归类。填上 Anthropic API key 后，拿不准的记录会交给 Claude 判断归属，并为没有标题的长记录提炼一句话标题、补标签和数字属性；收件箱也可一键「AI 整理」。key 保存在本机 vault/.notebook/config.json（不进 git）。'));
-  const keyIn = el('input', { type: 'password', placeholder: ai.configured ? `已保存 ${ai.keyPrefix}，输入新 key 可替换` : 'sk-ant-…', autocomplete: 'off' });
+  page.append(el('h2', {}, '智能归类（AI）'), el('p', {}, '不填也能用：系统靠关键词、学到的规则和「与各笔记本已有内容的相似度」归类。开启后，拿不准的记录会交给模型判断归属，并为没有标题的长记录提炼一句话标题、补标签和数字属性；收件箱也可一键「AI 整理」。最省事的是直接用本机已登录的 Claude Code：不用 key，走你现有的订阅。设置保存在本机 vault/.notebook/config.json（不进 git）。'));
+  const isApi = ai.provider === 'api';
+  const cliInfo = ai.provider === 'claude-cli' ? ai.cli.claude : ai.provider === 'codex-cli' ? ai.cli.codex : null;
+  const cliName = ai.provider === 'codex-cli' ? 'codex' : 'claude';
+  const providerSel = el('select', {}, ai.providers.map((p) => el('option', { value: p.id, selected: p.id === ai.provider }, p.label)));
+  const keyIn = el('input', { type: 'password', placeholder: ai.hasKey ? `已保存 ${ai.keyPrefix}，输入新 key 可替换` : 'sk-ant-…', autocomplete: 'off' });
   const modelSel = el('select', {}, ai.models.map((m) => el('option', { value: m.id, selected: m.id === ai.model }, m.label)));
   const modeSel = el('select', {}, el('option', { value: 'unsure', selected: ai.mode !== 'always' }, '只在规则拿不准时问 AI（省钱）'), el('option', { value: 'always', selected: ai.mode === 'always' }, '每条都让 AI 复核（更准）'));
   const enabledChk = el('input', { type: 'checkbox', checked: !!ai.enabled, disabled: !ai.configured });
   const aiOut = el('div', { class: 'muted', style: 'font-size:13px;margin-top:10px' });
   const saveAi = async (body) => { try { const r = await api('POST', '/api/ai', body); toast('已保存'); state.ai = r; route(); } catch (err) { toast(err.message, true); } };
+  providerSel.onchange = () => saveAi({ provider: providerSel.value });
+  const testBtn = el('button', { class: 'btn', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; aiOut.textContent = '测试中…（CLI 第一次可能要十几秒）'; try { const r = await api('POST', '/api/ai/test', {}); aiOut.innerHTML = ''; aiOut.append(el('span', { class: 'ok' }, `✓ 连接正常 · ${r.model} · ${r.ms} ms · 回复「${r.reply}」`)); } catch (err) { aiOut.innerHTML = ''; aiOut.append(el('span', { class: 'err' }, '连接失败：' + err.message)); } b.disabled = false; } }, '测试连接');
+  const cliStatus = !isApi && (cliInfo
+    ? el('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px' }, el('span', { class: 'chip source' }, '已找到'), el('span', { style: 'font-family:var(--mono);font-size:12px' }, cliInfo.path), cliInfo.version && el('span', { class: 'muted', style: 'font-size:12px' }, cliInfo.version),
+        !ai.enabled && el('button', { class: 'btn primary small', onclick: () => saveAi({ provider: ai.provider, enabled: true }) }, '开启'))
+    : el('div', {}, el('span', { class: 'err' }, `本机没找到 ${cliName} 命令。`), el('span', { class: 'muted', style: 'font-size:13px' }, cliName === 'claude' ? ' 安装并登录：终端运行 npm i -g @anthropic-ai/claude-code && claude ，登录后回到这里刷新。' : ' 安装并登录：终端运行 npm i -g @openai/codex && codex ，登录后回到这里刷新。')));
   page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
-    el('label', {}, 'API key'), el('div', { class: 'row' }, keyIn, el('button', { class: 'btn primary', onclick: () => { if (!keyIn.value.trim()) { toast('先粘贴 key', true); return; } saveAi({ apiKey: keyIn.value.trim(), enabled: true }); } }, ai.configured ? '替换' : '保存并开启'), ai.configured && el('button', { class: 'btn danger', onclick: () => { if (confirm('删除已保存的 API key 并关闭 AI？')) saveAi({ clearKey: true }); } }, '删除')),
-    el('label', {}, '模型'), el('div', { class: 'row' }, modelSel, el('span', { class: 'muted', style: 'font-size:12px' }, '一条记录约 1k token，Opus 约 ¥0.03/条，Haiku 约 ¥0.001/条')),
+    el('label', {}, '方式'), providerSel,
+    isApi && el('label', {}, 'API key'), isApi && el('div', { class: 'row' }, keyIn, el('button', { class: 'btn primary', onclick: () => { if (!keyIn.value.trim()) { toast('先粘贴 key', true); return; } saveAi({ provider: 'api', apiKey: keyIn.value.trim(), enabled: true }); } }, ai.hasKey ? '替换' : '保存并开启'), ai.hasKey && el('button', { class: 'btn danger', onclick: () => { if (confirm('删除已保存的 API key？')) saveAi({ clearKey: true }); } }, '删除')),
+    !isApi && el('label', {}, '本机 CLI'), cliStatus,
+    ai.provider !== 'codex-cli' && el('label', {}, '模型'), ai.provider !== 'codex-cli' && el('div', { class: 'row' }, modelSel, el('span', { class: 'muted', style: 'font-size:12px' }, isApi ? '一条记录约 1k token，Opus 约 ¥0.03/条，Haiku 约 ¥0.001/条' : '走 Claude Code 的登录账号，占用订阅额度，不另外计费；归类这种小活用 Haiku 足够')),
     el('label', {}, '何时使用'), modeSel,
-    el('label', {}, '开关'), el('div', { class: 'row' }, el('label', {}, enabledChk, ai.configured ? ' 启用 AI 归类' : ' 启用 AI 归类（先保存 key）')),
+    el('label', {}, '开关'), el('div', { class: 'row' }, el('label', {}, enabledChk, ai.configured ? ' 启用 AI 归类' : isApi ? ' 启用 AI 归类（先保存 key）' : ` 启用 AI 归类（先安装并登录 ${cliName}）`)),
     el('div', { class: 'actions' },
-      el('button', { class: 'btn', onclick: () => saveAi({ model: modelSel.value, mode: modeSel.value, enabled: enabledChk.checked }) }, '保存设置'),
-      ai.configured && el('button', { class: 'btn', onclick: async (e) => { e.currentTarget.disabled = true; aiOut.textContent = '测试中…'; try { const r = await api('POST', '/api/ai/test', {}); aiOut.innerHTML = ''; aiOut.append(el('span', { class: 'ok' }, `✓ 连接正常 · ${r.model} · ${r.ms} ms`)); } catch (err) { aiOut.innerHTML = ''; aiOut.append(el('span', { class: 'err' }, '连接失败：' + err.message)); } e.currentTarget.disabled = false; } }, '测试连接'))),
+      el('button', { class: 'btn', onclick: () => saveAi({ provider: ai.provider, model: modelSel.value, mode: modeSel.value, enabled: enabledChk.checked }) }, '保存设置'),
+      ai.configured && testBtn)),
     aiOut));
 
   page.append(el('h2', {}, 'Agent 访问令牌'), el('p', {}, el('a', { href: '#/agents', style: 'color:var(--accent)' }, '接入 Agent 页'), ' 可以自动检测并一键接入本机 agent。这里管理已有令牌：read 只能读取，write 可以记录 / 修改，admin 可以管理令牌和备份。'));
