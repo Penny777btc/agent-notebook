@@ -902,11 +902,14 @@ async function viewSettings(main) {
   const steps = el('div', { class: 'kv', style: 'margin-top:14px;grid-template-columns:150px 1fr' },
     el('div', { class: 'k' }, '访问密码'), el('div', {}, acc.passwordSet ? el('span', { class: 'ok' }, `已设置（${fmtTime(acc.passwordSetAt).slice(0, 16)}）`) : el('span', { class: 'err' }, '未设置 — 手机无法登录')),
     el('div', { class: 'k' }, '同一 Wi-Fi'), el('div', {}, acc.lan ? [acc.boundLan ? el('span', { class: 'ok' }, '已开启。') : el('span', { class: 'err' }, '已开启，重启服务后生效。'), el('div', { style: 'margin-top:4px' }, '手机浏览器打开：', acc.lanUrls.map((u) => el('a', { href: u, target: '_blank', style: 'color:var(--accent-text);margin-right:10px;font-family:var(--mono);font-size:13px' }, u)))] : el('span', { class: 'muted' }, '未开启（服务只监听 127.0.0.1）')),
+    el('div', { class: 'k' }, '固定地址'), el('div', {}, acc.funnelUrl
+      ? [el('span', { class: 'ok' }, 'Tailscale Funnel 已开启：'), el('a', { href: acc.funnelUrl, target: '_blank', style: 'color:var(--accent-text);font-family:var(--mono);font-size:13px' }, acc.funnelUrl), el('div', { class: 'muted', style: 'font-size:12px;margin-top:2px' }, '手机和远程 agent 都用这个地址；Mac 重启后不变。接入 Agent 页生成的 skill 默认带这个地址。')]
+      : el('span', { class: 'muted' }, '未开启')),
     el('div', { class: 'k' }, '不在同一网络'), el('div', { style: 'font-size:13px;line-height:1.7' },
-      el('div', {}, '任选一种隧道，把本机 3777 端口安全地带到手机上：'),
-      el('div', {}, el('b', {}, 'Tailscale'), '（推荐，私有网络，手机装 Tailscale 登录同一账号）：'), el('div', { class: 'code' }, `tailscale serve --bg ${acc.port}`),
-      el('div', {}, el('b', {}, 'Cloudflare Tunnel'), '（临时公网地址，每次运行都会变）：'), el('div', { class: 'code' }, `cloudflared tunnel --url http://127.0.0.1:${acc.port}`),
-      el('div', { class: 'muted' }, '隧道过来的请求一律要密码登录；只有本机直连不需要。')));
+      el('div', {}, el('b', {}, 'Tailscale Funnel'), '（推荐：固定公网 https 地址，没有机器人验证页，远程 agent 都能直连）：'), el('div', { class: 'code' }, `tailscale funnel --bg ${acc.port}`),
+      el('div', {}, el('b', {}, 'Tailscale Serve'), '（只给自己的设备，手机装 Tailscale 登录同一账号）：'), el('div', { class: 'code' }, `tailscale serve --bg ${acc.port}`),
+      el('div', {}, el('b', {}, 'Cloudflare 临时隧道'), '（地址每次都变，且会拦截部分 agent 的请求）：'), el('div', { class: 'code' }, `cloudflared tunnel --url http://127.0.0.1:${acc.port}`),
+      el('div', { class: 'muted' }, '隧道过来的请求一律要密码或 token；只有本机直连不需要。')));
   page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
     el('label', {}, acc.passwordSet ? '更换密码' : '设置密码'), el('div', { class: 'row' }, pw1, el('button', { class: 'btn primary', onclick: () => { if (pw1.value.length < 6) { toast('密码至少 6 位', true); return; } saveAccess({ password: pw1.value }); } }, acc.passwordSet ? '更换' : '设置'), acc.passwordSet && el('button', { class: 'btn danger', onclick: () => { if (confirm('清除访问密码？已登录的手机不受影响，可在令牌表里撤销。')) saveAccess({ clearPassword: true }); } }, '清除')),
     el('label', {}, '局域网访问'), el('div', { class: 'row' }, el('label', {}, lanChk, ' 允许同一 Wi-Fi 的设备连接（监听 0.0.0.0，需重启服务）'), el('button', { class: 'btn small', onclick: () => saveAccess({ lan: lanChk.checked }) }, '保存')),

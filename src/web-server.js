@@ -1,5 +1,6 @@
 // HTTP server: Notion-style web UI + REST API for the owner, and an MCP endpoint (/mcp) for remote agents.
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -12,6 +13,26 @@ import { metrics } from './metrics.js';
 import { AI_MODELS, AI_PROVIDERS, aiSettings, testConnection } from './enrich.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/** Public address Tailscale Funnel (or Serve) publishes for this port, if any. Cached for a minute. */
+let funnelCache = { at: 0, url: null };
+function funnelUrl(port) {
+  if (Date.now() - funnelCache.at < 60000) return funnelCache.url;
+  let url = null;
+  try {
+    const out = execFileSync('tailscale', ['funnel', 'status', '--json'], { timeout: 4000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const j = JSON.parse(out);
+    for (const [hostPort, cfg] of Object.entries(j.Web || {})) {
+      const proxies = Object.values(cfg.Handlers || {}).map((h) => h.Proxy || '');
+      if (!proxies.some((x) => x.endsWith(':' + port))) continue;
+      const [host, p] = hostPort.split(':');
+      url = `https://${host}${p && p !== '443' ? ':' + p : ''}`;
+      if (j.AllowFunnel?.[hostPort]) break; // prefer the public (Funnel) one
+    }
+  } catch { /* tailscale not installed or not serving */ }
+  funnelCache = { at: Date.now(), url };
+  return url;
+}
 
 export function createApp({ vault, auth, backup }) {
   const app = express();
@@ -81,14 +102,20 @@ export function createApp({ vault, auth, backup }) {
       } else res.json({ ok: true, notebook: r.notebook, title: r.title, path: r.path, mode: r.mode, hint: r.hint, related: r.related });
     } catch (err) { next(err); }
   });
+  /** The address agents should be given: the host the owner is browsing through when it is remote,
+   *  else the Tailscale Funnel address if one is published, else the local one. */
+  function baseOf(req) {
+    const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+    const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${req.socket.localPort}`;
+    const local = /^(127\.0\.0\.1|localhost|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+    return (local && funnelUrl(req.socket.localPort || auth.config.port || 3777)) || `${proto}://${host}`;
+  }
   const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   // OpenAPI description of the REST surface agents need (ChatGPT custom GPT "Actions": import this URL,
   // auth = API key / Bearer with a notebook token)
   app.get('/openapi.json', (req, res) => {
-    const proto = req.headers['x-forwarded-proto'] || 'http';
-    const host = req.headers['x-forwarded-host'] || req.headers.host;
-    res.json(openapi(`${proto}://${host}`, vault));
+    res.json(openapi(baseOf(req), vault));
   });
 
   // ---- MCP over Streamable HTTP ---------------------------------------
@@ -261,9 +288,7 @@ export function createApp({ vault, auth, backup }) {
     req.audit('create_token', name, { scopes: t.scopes, folders: t.folders, via: 'agents', replaced: exists });
     const entry = serverEntry({ token: t.token, vault: vault.root });
     // use the address the owner is browsing from (a tunnel host when set up remotely), else loopback
-    const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
-    const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${req.socket.localPort}`;
-    const base = `${proto}://${host}`;
+    const base = baseOf(req);
     res.status(201).json({ ...t, base, httpUrl: `${base}/mcp`, tokenUrl: `${base}/mcp/${t.token}`, quickUrl: `${base}/api/quick/${t.token}`, openapiUrl: `${base}/openapi.json`, json: { mcpServers: { 'agent-notebook': entry.json } }, toml: entry.toml, claudeCmd: `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${t.token} -e AGENT_NOTEBOOK_VAULT="${vault.root}" -- node "${entry.json.args[0]}" mcp` });
   });
   // remote-access settings: owner password, bind address, LAN addresses
@@ -281,7 +306,7 @@ export function createApp({ vault, auth, backup }) {
     const port = req.socket.localPort || cfg.port || 3777;
     const lanIps = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
     const boundLan = !!req.socket.server?.address && req.socket.server.address()?.address !== '127.0.0.1';
-    return { passwordSet: auth.hasPassword(), passwordSetAt: cfg.owner?.set || null, lan: cfg.host && cfg.host !== '127.0.0.1', boundLan, port, lanUrls: lanIps.map((ip) => `http://${ip}:${port}`), hostname: os.hostname(), devices: auth.listTokens().filter((t) => t.device) };
+    return { passwordSet: auth.hasPassword(), passwordSetAt: cfg.owner?.set || null, lan: cfg.host && cfg.host !== '127.0.0.1', boundLan, port, lanUrls: lanIps.map((ip) => `http://${ip}:${port}`), funnelUrl: funnelUrl(port), hostname: os.hostname(), devices: auth.listTokens().filter((t) => t.device) };
   }
   api.get('/audit', guard('admin'), (req, res) => res.json(auth.readAudit({ limit: Number(req.query.limit) || 200 })));
   api.get('/tokens', guard('admin'), (req, res) => res.json(auth.listTokens()));
