@@ -76,6 +76,19 @@ function toast(msg, isErr = false) {
 }
 
 // ---------------------------------------------------------------- markdown + [[wikilinks]]
+/** "news.google.com/rss/articles/CBMi…" — a short, readable stand-in for a bare URL. */
+function urlLabel(href, max = 28) {
+  try {
+    const u = new URL(href);
+    const host = u.hostname.replace(/^www\./, '');
+    let path = (u.pathname + (u.search && u.pathname.length < 8 ? u.search : '')).replace(/\/$/, '');
+    if (path.length <= 1) return host;
+    const room = Math.max(6, max - host.length);
+    return host + (path.length > room ? path.slice(0, room - 1) + '…' : path);
+  } catch { return href; }
+}
+const cleanExcerpt = (t, n = 140) => String(t || '').replace(/https?:\/\/[^\s)）\]]+/g, (m) => urlLabel(m, 22)).slice(0, n);
+
 function linkify(md) {
   return String(md || '').replace(/\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]/g, (m, name, label) => {
     const target = state.linkIndex[name.trim().toLowerCase()];
@@ -90,7 +103,11 @@ function renderMd(md, { journal = false } = {}) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script,iframe,object,embed,style').forEach((n) => n.remove());
   doc.querySelectorAll('*').forEach((n) => { for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (a.name === 'href' && /^javascript:/i.test(a.value))) n.removeAttribute(a.name); });
-  doc.querySelectorAll('a[href^="http"]').forEach((a) => { a.target = '_blank'; a.rel = 'noopener'; });
+  doc.querySelectorAll('a[href^="http"]').forEach((a) => {
+    a.target = '_blank'; a.rel = 'noopener';
+    const text = a.textContent.trim();
+    if (/^https?:\/\//.test(text) || text === a.getAttribute('href')) { a.title = a.getAttribute('href'); a.textContent = urlLabel(a.getAttribute('href')); a.classList.add('url'); }
+  });
   if (journal) journalEntriesHtml(doc);
   return doc.body.innerHTML;
 }
@@ -281,7 +298,7 @@ async function viewHome(main) {
     for (const n of items) {
       page.append(el('div', { class: 'inbox-item' },
         el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtClock(n.created)),
-        n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, n.excerpt.slice(0, 140)),
+        n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, cleanExcerpt(n.excerpt, 140)),
         assignChips(n)));
     }
   }
@@ -328,7 +345,7 @@ function feedGroup(g) {
   for (const it of g.items) {
     if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
     else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
-      el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 120))),
+      el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, cleanExcerpt(it.excerpt, 120))),
       el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 2).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
   }
   return box;
@@ -338,7 +355,7 @@ function feedGroup(g) {
 function noteTable(notes, { showFolder = true, extraProps = [] } = {}) {
   if (!notes.length) return el('div', { class: 'empty' }, '暂无内容');
   const cols = [
-    { k: 'title', label: '标题', render: (n) => el('td', {}, el('div', { style: 'font-weight:500' }, n.title), el('div', { class: 'muted', style: 'font-size:12px' }, (n.excerpt || '').slice(0, 90))) },
+    { k: 'title', label: '标题', render: (n) => el('td', {}, el('div', { style: 'font-weight:500' }, n.title), el('div', { class: 'muted', style: 'font-size:12px' }, cleanExcerpt(n.excerpt, 90))) },
     showFolder && { k: 'folder', label: '位置', render: (n) => el('td', { class: 'muted' }, nbOf(n.folder)?.title || n.folder || '/') },
     notes.some((n) => n.status) && { k: 'status', label: '状态', render: (n) => el('td', {}, n.status && el('span', { class: 'chip status' }, n.status)) },
     { k: 'tags', label: '标签', render: (n) => el('td', {}, n.tags.map((x) => el('span', { class: 'chip' }, x))) },
@@ -407,7 +424,7 @@ async function viewNotebook(main, folder) {
   if (!nb.inbox) page.append(captureBox({ notebook: folder }));
 
   if (nb.inbox) {
-    for (const n of nb.notes) page.append(el('div', { class: 'inbox-item' }, el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtTime(n.created)), n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, n.excerpt.slice(0, 160)), assignChips(n)));
+    for (const n of nb.notes) page.append(el('div', { class: 'inbox-item' }, el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtTime(n.created)), n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, cleanExcerpt(n.excerpt, 160)), assignChips(n)));
     if (!nb.notes.length) page.append(el('div', { class: 'empty' }, '收件箱是空的 🎉'));
   } else if (view === 'kanban') {
     page.append(await kanban(folder, dateFilter));
@@ -432,7 +449,7 @@ function timeline(nb) {
     for (const it of items) {
       if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
       else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
-        el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 140))),
+        el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, cleanExcerpt(it.excerpt, 140))),
         el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 3).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
     }
   }
@@ -634,7 +651,7 @@ async function kanban(folder, dateFilter) {
 }
 function cardEl(card) {
   const c = el('div', { class: 'card', draggable: 'true', onclick: () => openPeek(card.path) },
-    el('div', { class: 't' }, card.title), card.excerpt && card.excerpt !== card.title && el('div', { class: 'ex' }, card.excerpt),
+    el('div', { class: 't' }, card.title), card.excerpt && card.excerpt !== card.title && el('div', { class: 'ex' }, cleanExcerpt(card.excerpt, 200)),
     el('div', { class: 'meta' }, card.tags.slice(0, 4).map((t) => el('span', { class: 'chip' }, t)), chipSource(card.source), el('span', { class: 'date' }, card.date)));
   c.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.path); c.classList.add('dragging'); });
   c.addEventListener('dragend', () => c.classList.remove('dragging'));

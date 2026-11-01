@@ -458,6 +458,9 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
 .md blockquote::before { content: '“'; position: absolute; left: 0; top: .32em; font-size: 3.2em; line-height: 1; color: var(--text-3); font-family: Georgia, "Times New Roman", serif; }
 .md blockquote p + p { text-indent: 0; margin-top: .5em; }
 .md a { color: inherit; text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: .2em; } .md a:hover { color: var(--accent-text); }
+.md a.url { font-family: var(--font); font-size: .82em; font-weight: 500; color: var(--accent-text); text-decoration: none; background: var(--accent-bg); border-radius: 6px; padding: 1px 7px 1px 6px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; display: inline-block; line-height: 1.6; }
+.md a.url::after { content: ' ↗'; font-size: .85em; opacity: .7; }
+.md a.url:hover { background: var(--accent); color: #fff; }
 .md .wikilink { color: inherit; text-decoration: underline !important; text-decoration-style: dotted !important; text-decoration-color: var(--text-3) !important; }
 .md .wikilink:hover { color: var(--accent-text); } .md .wikilink.missing { border-bottom: none; color: var(--text-2); }
 .md code { font-size: 80%; letter-spacing: 0; padding: .1em .45em; border-radius: 4px; font-variant-numeric: lining-nums; }
