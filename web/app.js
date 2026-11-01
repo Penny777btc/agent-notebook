@@ -896,7 +896,8 @@ async function viewSettings(main) {
   const acc = await get('/api/access/settings');
   page.append(el('h2', {}, '手机访问'), el('p', {}, '在手机浏览器里打开这台 Mac 上的服务，用访问密码登录后就能用（可「添加到主屏幕」当 app 用）。每次登录生成一个设备令牌，列在下面的令牌表里，随时可撤销。'));
   const pw1 = el('input', { type: 'password', placeholder: acc.passwordSet ? '输入新密码可更换' : '至少 6 位', autocomplete: 'new-password' });
-  const lanChk = el('input', { type: 'checkbox', checked: !!acc.lan });
+  const lanChk = el('input', { type: 'checkbox', checked: !!acc.lan });  const trustChk = el('input', { type: 'checkbox', checked: acc.trustLoopback !== false });
+
   const accMsg = el('div', { class: 'muted', style: 'font-size:13px' });
   const saveAccess = async (body) => { try { const r = await api('POST', '/api/access/settings', body); toast('已保存'); pw1.value = ''; route(); return r; } catch (err) { toast(err.message, true); } };
   const steps = el('div', { class: 'kv', style: 'margin-top:14px;grid-template-columns:150px 1fr' },
@@ -912,6 +913,7 @@ async function viewSettings(main) {
       el('div', { class: 'muted' }, '隧道过来的请求一律要密码或 token；只有本机直连不需要。')));
   page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
     el('label', {}, acc.passwordSet ? '更换密码' : '设置密码'), el('div', { class: 'row' }, pw1, el('button', { class: 'btn primary', onclick: () => { if (pw1.value.length < 6) { toast('密码至少 6 位', true); return; } saveAccess({ password: pw1.value }); } }, acc.passwordSet ? '更换' : '设置'), acc.passwordSet && el('button', { class: 'btn danger', onclick: () => { if (confirm('清除访问密码？已登录的手机不受影响，可在令牌表里撤销。')) saveAccess({ clearPassword: true }); } }, '清除')),
+    el('label', {}, '本机免密'), el('div', { class: 'row' }, el('label', {}, trustChk, ' 本机浏览器不用密码即为 owner（个人电脑开着方便；放在服务器上请关掉，否则同机任何进程都是 owner）'), el('button', { class: 'btn small', onclick: () => saveAccess({ trustLoopback: trustChk.checked }) }, '保存')),
     el('label', {}, '局域网访问'), el('div', { class: 'row' }, el('label', {}, lanChk, ' 允许同一 Wi-Fi 的设备连接（监听 0.0.0.0，需重启服务）'), el('button', { class: 'btn small', onclick: () => saveAccess({ lan: lanChk.checked }) }, '保存')),
     status.principal?.kind === 'token' && el('label', {}, '本设备'), status.principal?.kind === 'token' && el('div', { class: 'row' }, el('span', { class: 'muted', style: 'font-size:13px' }, `以设备令牌「${status.principal.name}」登录`), el('button', { class: 'btn small', onclick: logout }, '退出登录'))),
     steps, accMsg));

@@ -47,8 +47,8 @@ export function createApp({ vault, auth, backup }) {
     if (bearer) {
       req.principal = auth.authenticate(bearer);
       if (!req.principal) return res.status(401).json({ error: 'invalid token' });
-    } else if (isLoopback(req)) {
-      req.principal = auth.owner(); // the human at the local UI
+    } else if (trustsLoopback(auth) && isLoopback(req)) {
+      req.principal = auth.owner(); // the human at the local UI (off on shared servers: config trustLoopback=false)
     } else {
       req.principal = null;
     }
@@ -64,10 +64,11 @@ export function createApp({ vault, auth, backup }) {
   // ---- phone / remote access: password login ---------------------------
   const loginFailures = new Map(); // ip → { n, until }
   app.get('/api/access', (req, res) => {
-    res.json({ authenticated: !!req.principal, principal: req.principal ? { name: req.principal.name, kind: req.principal.kind } : null, passwordSet: auth.hasPassword(), loopback: isLoopback(req) });
+    res.json({ authenticated: !!req.principal, principal: req.principal ? { name: req.principal.name, kind: req.principal.kind } : null, passwordSet: auth.hasPassword(), loopback: trustsLoopback(auth) && isLoopback(req) });
   });
   app.post('/api/login', (req, res, next) => {
-    const ip = req.socket.remoteAddress || '?';
+    // behind Funnel / a tunnel every client arrives from 127.0.0.1: key the lockout on the proxy-reported address
+    const ip = String(req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?';
     const f = loginFailures.get(ip);
     if (f && f.until > Date.now()) return res.status(429).json({ error: `尝试太多次，${Math.ceil((f.until - Date.now()) / 1000)} 秒后再试` });
     try {
@@ -294,11 +295,15 @@ export function createApp({ vault, auth, backup }) {
   // remote-access settings: owner password, bind address, LAN addresses
   api.get('/access/settings', guard('admin'), (req, res) => res.json(accessSettings(req)));
   api.post('/access/settings', guard('admin'), (req, res) => {
-    const { password, clearPassword, lan } = req.body || {};
+    const { password, clearPassword, lan, trustLoopback } = req.body || {};
     if (clearPassword) auth.setPassword('');
     else if (password !== undefined && password !== '') auth.setPassword(password);
     if (lan !== undefined) auth.update((cfg) => { cfg.host = lan ? '0.0.0.0' : '127.0.0.1'; });
-    req.audit('update_access', 'web', { password: password ? 'set' : clearPassword ? 'cleared' : undefined, lan });
+    if (trustLoopback !== undefined) {
+      if (trustLoopback === false && !auth.hasPassword()) return res.status(400).json({ error: '先设置访问密码，否则关掉本机免密后你自己也登不进来' });
+      auth.update((cfg) => { cfg.trustLoopback = !!trustLoopback; });
+    }
+    req.audit('update_access', 'web', { password: password ? 'set' : clearPassword ? 'cleared' : undefined, lan, trustLoopback });
     res.json(accessSettings(req));
   });
   function accessSettings(req) {
@@ -306,7 +311,7 @@ export function createApp({ vault, auth, backup }) {
     const port = req.socket.localPort || cfg.port || 3777;
     const lanIps = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
     const boundLan = !!req.socket.server?.address && req.socket.server.address()?.address !== '127.0.0.1';
-    return { passwordSet: auth.hasPassword(), passwordSetAt: cfg.owner?.set || null, lan: cfg.host && cfg.host !== '127.0.0.1', boundLan, port, lanUrls: lanIps.map((ip) => `http://${ip}:${port}`), funnelUrl: funnelUrl(port), hostname: os.hostname(), devices: auth.listTokens().filter((t) => t.device) };
+    return { passwordSet: auth.hasPassword(), passwordSetAt: cfg.owner?.set || null, lan: cfg.host && cfg.host !== '127.0.0.1', boundLan, port, lanUrls: lanIps.map((ip) => `http://${ip}:${port}`), funnelUrl: funnelUrl(port), trustLoopback: trustsLoopback(auth), hostname: os.hostname(), devices: auth.listTokens().filter((t) => t.device) };
   }
   api.get('/audit', guard('admin'), (req, res) => res.json(auth.readAudit({ limit: Number(req.query.limit) || 200 })));
   api.get('/tokens', guard('admin'), (req, res) => res.json(auth.listTokens()));
@@ -377,6 +382,12 @@ function openapi(base, vault) {
   };
 }
 
+/** On a personal machine the local browser is the owner. On a shared server every local process would be,
+ *  so `trustLoopback: false` in config.json (or AGENT_NOTEBOOK_TRUST_LOOPBACK=0) makes loopback anonymous too. */
+function trustsLoopback(auth) {
+  if (process.env.AGENT_NOTEBOOK_TRUST_LOOPBACK === '0') return false;
+  return auth.config.trustLoopback !== false;
+}
 function isLoopback(req) {
   const ip = req.socket.remoteAddress || '';
   const local = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
