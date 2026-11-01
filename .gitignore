@@ -2,3 +2,5 @@ node_modules/
 .DS_Store
 # The vault (your notes) is its own git repo, backed up separately.
 vault/
+web/*.shortcut
+web/s-*/

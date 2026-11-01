@@ -52,6 +52,34 @@ export function createApp({ vault, auth, backup }) {
     }
   });
 
+  // ---- one-URL capture: for agents that can only open a link (browsing tools, bookmarks) ----
+  // GET /api/quick/<token>?text=...&title=&tags=a,b&notebook=   (POST with a JSON or form body works too)
+  app.all('/api/quick/:token', express.urlencoded({ extended: false }), (req, res, next) => {
+    try {
+      const principal = auth.authenticate(req.params.token);
+      if (!principal) { auth.audit({ name: 'anonymous' }, 'quick:denied', 'url-token', { ip: req.socket.remoteAddress }); return res.status(401).json({ error: 'invalid token' }); }
+      const q = { ...req.query, ...(req.body || {}) };
+      const text = String(q.text || q.t || '').trim();
+      if (!text) return res.status(400).json({ error: 'text is required: /api/quick/<token>?text=...' });
+      auth.require(principal, 'write', q.notebook || '');
+      const tags = Array.isArray(q.tags) ? q.tags : String(q.tags || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+      const r = capture(vault, router, { text, title: q.title || undefined, notebook: q.notebook || undefined, tags, source: q.source || principal.name });
+      auth.audit(principal, 'capture', r.path, { via: 'quick', mode: r.mode, notebook: r.notebook.folder });
+      if ((req.headers.accept || '').includes('text/html')) {
+        res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已记入</title><body style="font-family:-apple-system,sans-serif;padding:40px 24px;color:#1d1d1f"><h2 style="margin:0 0 8px">${r.notebook.icon} 已记入「${esc(r.notebook.title)}」</h2><p style="color:#6e6e73">${esc(r.title)}</p><p style="color:#86868b;font-size:13px">${esc(r.hint)}</p></body>`);
+      } else res.json({ ok: true, notebook: r.notebook, title: r.title, path: r.path, mode: r.mode, hint: r.hint, related: r.related });
+    } catch (err) { next(err); }
+  });
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // OpenAPI description of the REST surface agents need (ChatGPT custom GPT "Actions": import this URL,
+  // auth = API key / Bearer with a notebook token)
+  app.get('/openapi.json', (req, res) => {
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    res.json(openapi(`${proto}://${host}`, vault));
+  });
+
   // ---- MCP over Streamable HTTP ---------------------------------------
   // /mcp with a bearer header, or /mcp/<token> for clients that cannot set headers
   // (custom connectors in the Claude / ChatGPT apps). Over HTTPS the URL form is as private as the header.
@@ -186,7 +214,7 @@ export function createApp({ vault, auth, backup }) {
     const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
     const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${req.socket.localPort}`;
     const base = `${proto}://${host}`;
-    res.status(201).json({ ...t, httpUrl: `${base}/mcp`, tokenUrl: `${base}/mcp/${t.token}`, json: { mcpServers: { 'agent-notebook': entry.json } }, toml: entry.toml, claudeCmd: `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${t.token} -e AGENT_NOTEBOOK_VAULT="${vault.root}" -- node "${entry.json.args[0]}" mcp` });
+    res.status(201).json({ ...t, base, httpUrl: `${base}/mcp`, tokenUrl: `${base}/mcp/${t.token}`, quickUrl: `${base}/api/quick/${t.token}`, openapiUrl: `${base}/openapi.json`, json: { mcpServers: { 'agent-notebook': entry.json } }, toml: entry.toml, claudeCmd: `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${t.token} -e AGENT_NOTEBOOK_VAULT="${vault.root}" -- node "${entry.json.args[0]}" mcp` });
   });
   // remote-access settings: owner password, bind address, LAN addresses
   api.get('/access/settings', guard('admin'), (req, res) => res.json(accessSettings(req)));
@@ -246,6 +274,29 @@ export function createApp({ vault, auth, backup }) {
 
 /** Owner-without-token only for a direct local connection. A tunnel (cloudflared, tailscale serve, a reverse
  *  proxy) also connects from 127.0.0.1 but announces the real client in a forwarding header → not loopback. */
+function openapi(base, vault) {
+  const notebooks = vault.listNotebooks().filter((n) => !n.inbox).map((n) => n.folder);
+  const captureBody = { type: 'object', required: ['text'], properties: {
+    text: { type: 'string', description: 'The content to keep (Markdown ok, [[Title]] links ok)' },
+    title: { type: 'string', description: 'One-line headline (≤60 chars); defaults to the first line' },
+    notebook: { type: 'string', enum: notebooks, description: 'Only when the owner said where it belongs; otherwise omit and let the router decide' },
+    tags: { type: 'array', items: { type: 'string' } },
+    properties: { type: 'object', additionalProperties: true, description: 'Structured facts: numbers like {amount: 35, weight: 71.5}, url, ticker…' },
+    source: { type: 'string', description: 'Your agent name' } } };
+  return {
+    openapi: '3.1.0', info: { title: 'Agent Notebook', version: '0.3.0', description: 'The owner\'s local Markdown notebook. Capture anything worth keeping; it is routed to the right notebook automatically.' },
+    servers: [{ url: base }],
+    components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer' } } }, security: [{ bearer: [] }],
+    paths: {
+      '/api/capture': { post: { operationId: 'capture', summary: 'Keep something (auto-routed to a notebook)', requestBody: { required: true, content: { 'application/json': { schema: captureBody } } }, responses: { 201: { description: 'Where it went: notebook, path, mode (auto|inbox|explicit), hint, related notes' } } } },
+      '/api/today': { get: { operationId: 'today', summary: "Everything recorded on a day, grouped by notebook", parameters: [{ name: 'date', in: 'query', schema: { type: 'string', format: 'date' } }], responses: { 200: { description: 'groups[]' } } } },
+      '/api/search': { get: { operationId: 'search', summary: 'Full-text search', parameters: [{ name: 'q', in: 'query', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'hits[]' } } } },
+      '/api/notebooks': { get: { operationId: 'listNotebooks', summary: 'Notebooks with kind, keywords, description', responses: { 200: { description: 'notebooks[]' } } } },
+      '/api/metrics/{notebook}': { get: { operationId: 'metrics', summary: 'Numeric series of a notebook (amount, weight…)', parameters: [{ name: 'notebook', in: 'path', required: true, schema: { type: 'string' } }, { name: 'from', in: 'query', schema: { type: 'string' } }, { name: 'to', in: 'query', schema: { type: 'string' } }], responses: { 200: { description: 'keys[] + series' } } } }
+    }
+  };
+}
+
 function isLoopback(req) {
   const ip = req.socket.remoteAddress || '';
   const local = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';

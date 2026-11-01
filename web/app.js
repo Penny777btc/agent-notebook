@@ -873,7 +873,47 @@ async function viewSettings(main) {
 }
 
 // ---------------------------------------------------------------- agents
+/** A paste-ready skill / system prompt that teaches any agent to write into this notebook with this token. */
+function skillText(r) {
+  const nbs = state.notebooks.filter((n) => !n.inbox).map((n) => `${n.title}（${n.folder}，${KIND_LABEL[n.kind]}${n.keywords?.length ? '：' + n.keywords.slice(0, 6).join('、') : ''}）`).join('\n  - ');
+  return `# 技能：记到我的 Agent Notebook
+
+我有一个私人笔记本（本地 Markdown，Obsidian 兼容），所有 agent 共用。值得保留的内容请记进去，不要只留在对话里。
+
+## 怎么记（按你能做的方式选一种）
+1. 支持 MCP 连接器：服务器地址 ${r.tokenUrl} ，调用工具 notebook_capture { text, title?, tags?, properties?, source: "${r.name}" }。
+2. 能发 HTTP 请求：POST ${r.base}/api/capture ，请求头 Authorization: Bearer ${r.token} ，JSON 正文 { "text": "...", "title": "...", "tags": [], "properties": {}, "source": "${r.name}" }。
+3. 只能打开网址：访问 ${r.quickUrl}?text=<URL 编码后的内容> ，返回 JSON 里的 hint 就是结果。
+
+## 什么时候记
+- 我说「记一下 / 记到笔记本 / 存起来 / 帮我记住」时，立刻记，不要反问格式。
+- 你自己得出的结论、发现的线索、值得回看的想法，主动记，记完一句话告诉我归到了哪里。
+
+## 怎么写
+- 一次一条。title 是一句话结论（≤60 字），细节放 text（可用 Markdown）。
+- 数字一律放 properties：花钱 {"amount": 35}，体重 {"weight": 71.5}，步数 {"steps": 8000}，页数 {"pages": 40}，同类数字始终用同一个 key，这样会自动画成图表。
+- source 固定填 "${r.name}"。
+- 不要自己选笔记本：系统按关键词和我教过的规则自动归类，拿不准会进收件箱由我分配。只有我明确说「记到 X」时才传 notebook。现有笔记本：
+  - ${nbs}
+- 想引用已有笔记，在 text 里写 [[笔记标题]]。返回结果里的 related 是相似的已有笔记，明显同一主题就别重复新建。
+
+## 回看
+- 今天记了什么：GET ${r.base}/api/today （或 MCP 工具 notebook_today）
+- 搜索：GET ${r.base}/api/search?q=关键词 （或 notebook_search）
+- ChatGPT 自定义 GPT 的 Action 可直接导入 ${r.openapiUrl} ，认证选 API Key → Bearer，填上面的 token。`;
+}
+
 function snippetBlocks(r) {
+  const skill = skillText(r);
+  const copyBtn = el('button', { class: 'btn small primary', onclick: async () => { try { await navigator.clipboard.writeText(skill); toast('已复制 Skill'); } catch { toast('复制失败，请手动选择文本', true); } } }, '复制 Skill');
+  return el('div', {},
+    el('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:12px' }, el('div', { style: 'font-weight:600' }, '最简单：把这段 Skill 粘贴给 agent'), el('div', { class: 'spacer' }), copyBtn),
+    el('div', { class: 'muted', style: 'font-size:12.5px;margin:4px 0 8px' }, '放进它的系统提示 / 项目指令 / 自定义指令里即可。里面已经包含地址、token、笔记本列表和记录规则，agent 会按自己能用的方式（MCP / HTTP / 打开网址）去记。'),
+    el('textarea', { class: 'body-edit', readonly: true, style: 'min-height:260px;font-size:12.5px', onclick: (e) => e.target.select() }, skill),
+    el('details', { style: 'margin-top:14px' }, el('summary', { style: 'cursor:pointer;color:var(--text-2);font-size:13px' }, '手动配置的各种格式'), snippetDetails(r)));
+}
+
+function snippetDetails(r) {
   return el('div', {},
     el('div', { style: 'font-weight:500;margin-top:12px' }, '方式 A · HTTP（适合桌面应用 / 远程 agent，服务需保持运行）：'),
     el('div', { class: 'code' }, `URL: ${r.httpUrl}\nAuthorization: Bearer ${r.token}`),
