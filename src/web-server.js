@@ -7,6 +7,7 @@ import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
 import { resolveSource } from './agent-id.js';
+import { relatedEdges, conceptsBatch, notesNeedingConcepts } from './relations.js';
 import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
 import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
@@ -181,7 +182,18 @@ export function createApp({ vault, auth, backup }) {
     const g = vault.graph();
     const nodes = g.nodes.filter((n) => auth.can(req.principal, 'read', n.path));
     const ok = new Set(nodes.map((n) => n.path));
-    res.json({ ...g, nodes, edges: g.edges.filter((e) => ok.has(e.source) && ok.has(e.target)) });
+    const rel = req.query.related === '0' ? { edges: [], coverage: null, concepts: {} } : relatedEdges(vault);
+    for (const n of nodes) n.concepts = rel.concepts[n.path] || [];
+    res.json({ ...g, nodes, edges: g.edges.filter((e) => ok.has(e.source) && ok.has(e.target)), related: rel.edges.filter((e) => ok.has(e.source) && ok.has(e.target)), coverage: rel.coverage, pendingConcepts: notesNeedingConcepts(vault).length, aiEnabled: aiSettings(auth).enabled });
+  });
+  // AI reads each note and stores 3–8 core concepts (frontmatter `concepts`); the graph links notes that share them
+  api.post('/ai/concepts', guard('write'), async (req, res, next) => {
+    try {
+      if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里选择方式并开启' });
+      const r = await conceptsBatch(vault, auth, { limit: Math.min(10, Number(req.body?.limit) || 5), paths: req.body?.paths, log: aiLog });
+      req.audit('ai_concepts', '', { via: 'web', done: r.done.length, failed: r.failed.length, left: r.left });
+      res.json(r);
+    } catch (err) { next(err); }
   });
   api.post('/capture', guard('write', (r) => r.body.notebook || ''), async (req, res, next) => {
     try {

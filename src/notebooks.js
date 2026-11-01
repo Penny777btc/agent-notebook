@@ -6,6 +6,7 @@ import { localDate } from './vault.js';
 import { extractFields } from './metrics.js';
 import { NotebookProfiles, extractNumbers } from './content.js';
 import { enrich as aiEnrich, aiSettings } from './enrich.js';
+import { bodyHash } from './relations.js';
 
 const INBOX_FOLDER = '收件箱';
 // whole CJK phrases of 2-6 chars (bounded by non-CJK); longer runs are sentences, not keywords
@@ -254,6 +255,14 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
     note = r; entry = r.entry;
   } else {
     note = vault.createNote({ folder, title, body: text, properties: { ...properties, ...common } });
+  }
+
+  if (ai?.concepts?.length) {
+    try {
+      const cur = vault.getNote(note.path);
+      const merged = [...new Set([...(Array.isArray(cur.properties?.concepts) ? cur.properties.concepts : []), ...ai.concepts])].slice(0, 20);
+      vault.updateNote(note.path, { properties: { concepts: merged, concepts_hash: bodyHash(cur.body), ...(ai.summary && !cur.properties?.summary && meta.kind !== 'journal' ? { summary: ai.summary } : {}) } });
+    } catch { /* concepts are a nicety; never fail the capture */ }
   }
 
   const idx = vault.titleIndex();

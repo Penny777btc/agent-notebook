@@ -13,6 +13,7 @@ export const AI_MODELS = [
   { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5（最便宜，约为 Opus 的 1/40）' }
 ];
 const DEFAULT_MODEL = 'claude-opus-5-5';
+const ENRICH_SCHEMA = { type: 'object', properties: { notebook: { type: ['string', 'null'] }, confidence: { type: 'number' }, title: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, properties: { type: 'object', additionalProperties: { type: 'number' } }, summary: { type: 'string' }, concepts: { type: 'array', items: { type: 'string' } } }, required: ['notebook', 'confidence', 'title', 'tags', 'properties', 'summary', 'concepts'] };
 
 // Three ways to reach a model: an Anthropic API key, or the Claude Code / Codex CLI already logged in
 // on this Mac (no key, billed to that subscription). The CLIs run headless: `claude -p` / `codex exec`.
@@ -84,7 +85,7 @@ function run(bin, args, { input, timeout = 60000 } = {}) {
 }
 
 /** One completion through whichever provider is configured → { text, model, usage, refusal? }. */
-export async function complete(auth, { system, user, maxTokens = 800 }) {
+export async function complete(auth, { system, user, maxTokens = 800, schema }) {
   const s = aiSettings(auth);
   if (s.provider === 'claude-cli') {
     if (!s.cli.claude) throw new Error('本机没有找到 claude 命令：先安装 Claude Code 并登录（终端运行 claude）');
@@ -98,7 +99,10 @@ export async function complete(auth, { system, user, maxTokens = 800 }) {
   if (s.provider === 'grok-cli') {
     if (!s.cli.grok) throw new Error('本机没有找到 grok 命令：先安装 Grok Build 并登录（终端运行 grok）');
     // headless: no tools, one turn, system prompt via --rules, the user text as the prompt argument
-    const args = ['-p', user, '--output-format', 'json', '--tools', '', '--max-turns', '1', '--disable-web-search', '--rules', system];
+    // our own system prompt replaces the coding-agent one (26k tokens of tools/skills that only confuse a
+    // classification job); a JSON schema pins the output shape
+    const args = ['-p', user, '--output-format', 'json', '--tools', '', '--max-turns', '1', '--disable-web-search', '--effort', 'low', '--system-prompt-override', system];
+    if (schema) args.push('--json-schema', JSON.stringify(schema));
     if (s.grokModel) args.push('-m', s.grokModel);
     const { stdout } = await run(s.cli.grok.path, args, { timeout: 90000 });
     const json = parseJson(stdout.slice(stdout.indexOf('{')));
@@ -137,7 +141,7 @@ function systemPrompt(notebooks) {
 ${list}
 
 对给定的一条记录，只输出一个 JSON 对象（不要 Markdown 代码块，不要解释），字段：
-{"notebook": "folder 或 null", "confidence": 0 到 1 的小数, "title": "不超过 30 个字的一句话标题，陈述结论或事实，不要以“关于”开头", "tags": ["最多 4 个短标签"], "properties": {"仅数字事实，如 amount/weight/steps/sleep_hours/pages": 数字}, "summary": "不超过 40 个字的摘要，内容本身已经很短时留空"}
+{"notebook": "folder 或 null", "confidence": 0 到 1 的小数, "title": "不超过 30 个字的一句话标题，陈述结论或事实，不要以“关于”开头", "tags": ["最多 4 个短标签"], "properties": {"仅数字事实，如 amount/weight/steps/sleep_hours/pages": 数字}, "summary": "不超过 40 个字的摘要，内容本身已经很短时留空", "concepts": ["3 到 8 个核心概念：具体的实体（项目、代币、产品、人物、机构）、主题或方法名，用原文叫法，每个不超过 12 个字，不要泛词和日期"]}
 
 规则：
 - notebook 只填上面列表里的 folder；拿不准（confidence < 0.6）就填 null，宁可进收件箱也不要乱归。
@@ -153,7 +157,7 @@ export async function enrich(auth, { text, title, tags = [], notebooks }, { log 
   const started = Date.now();
   try {
     const body = `记录内容：\n${String(text || '').slice(0, 6000)}${title ? `\n\n已有标题：${title}` : ''}${tags.length ? `\n已有标签：${tags.join('、')}` : ''}`;
-    const res = await complete(auth, { system: systemPrompt(notebooks), user: body, maxTokens: 800 });
+    const res = await complete(auth, { system: systemPrompt(notebooks), user: body, maxTokens: 800, schema: ENRICH_SCHEMA });
     if (res.refusal) { log?.({ event: 'ai:refusal', category: res.refusal }); return null; }
     const textOut = res.text;
     const parsed = parseJson(textOut);
@@ -166,6 +170,7 @@ export async function enrich(auth, { text, title, tags = [], notebooks }, { log 
       tags: Array.isArray(parsed.tags) ? parsed.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 4) : [],
       properties: Object.fromEntries(Object.entries(parsed.properties || {}).filter(([k, v]) => /^[a-z][a-z0-9_]{0,30}$/.test(k) && typeof v === 'number' && Number.isFinite(v))),
       summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 80) : '',
+      concepts: Array.isArray(parsed.concepts) ? [...new Set(parsed.concepts.map((c) => String(c).trim()).filter((c) => c && c.length <= 24))].slice(0, 8) : [],
       model: res.model || s.model,
       ms: Date.now() - started,
       usage: res.usage

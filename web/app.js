@@ -17,7 +17,7 @@ const today = () => localDate();
 const shiftDate = (iso, days) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + days); return localDate(d); };
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '';
 const fmtClock = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
-const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries'];
+const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries', 'concepts_hash'];
 const KIND_LABEL = { board: '看板', journal: '日志', pages: '页面集' };
 const encPath = (p) => p.split('/').map(encodeURIComponent).join('/');
 
@@ -1180,7 +1180,8 @@ function notebookColor(folder) {
 }
 
 async function viewGraph(main, focus) {
-  const data = await get('/api/graph');
+  let data = await get('/api/graph');
+  let showRelated = localStorage.getItem('graph:related') !== '0';
   const page = el('div', { class: 'page wide', style: 'padding-bottom:16px' });
   const hiddenKey = 'graph:hidden';
   const hidden = new Set(JSON.parse(localStorage.getItem(hiddenKey) || '[]'));
@@ -1188,8 +1189,10 @@ async function viewGraph(main, focus) {
   let query = '';
   const focusPath = focus || ''; // parseHash already decoded it
 
-  page.append(el('div', { style: 'display:flex;align-items:baseline;gap:12px' }, el('h1', { class: 'page-title', style: 'font-size:28px;margin:0' }, '关系图'),
-    el('span', { class: 'muted', style: 'font-size:13px' }, `${data.nodes.length} 篇笔记 · ${data.edges.length} 条链接${data.unresolved.length ? ` · ${data.unresolved.length} 个未创建的链接` : ''}`)));
+  const counts = el('span', { class: 'muted', style: 'font-size:13px' });
+  const drawCounts = () => { counts.textContent = `${data.nodes.length} 篇笔记 · ${data.edges.length} 条 [[链接]] · ${data.related.length} 条内容关联 · ${data.coverage ? `${data.coverage.withConcepts}/${data.coverage.total} 篇已提炼概念` : ''}`; };
+  drawCounts();
+  page.append(el('div', { style: 'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap' }, el('h1', { class: 'page-title', style: 'font-size:28px;margin:0' }, '关系图'), counts));
 
   // legend = filter
   const groups = new Map();
@@ -1208,14 +1211,36 @@ async function viewGraph(main, focus) {
   const search = el('input', { type: 'search', placeholder: '高亮标题包含…', style: 'font-size:13px;width:180px;height:27px;padding:3px 10px' });
   search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); paint(); });
   const orphanBtn = el('button', { class: 'btn small' + (showOrphans ? ' active' : ''), onclick: () => { showOrphans = !showOrphans; localStorage.setItem('graph:orphans', showOrphans ? '1' : '0'); orphanBtn.classList.toggle('active', showOrphans); rebuild(); } }, '显示未链接的笔记');
-  page.append(el('div', { class: 'toolbar', style: 'border:none;padding-bottom:6px;margin-bottom:6px' }, legend, el('div', { class: 'spacer' }), search, orphanBtn, el('button', { class: 'btn small', onclick: () => { userView = false; rebuild(true); } }, '↻ 重新布局')));
+  const relBtn = el('button', { class: 'btn small' + (showRelated ? ' active' : ''), title: '按内容相似、共同概念 / 标签 / 实体自动连线（虚线）', onclick: () => { showRelated = !showRelated; localStorage.setItem('graph:related', showRelated ? '1' : '0'); relBtn.classList.toggle('active', showRelated); rebuild(); } }, '内容关联');
+  const aiBtn = el('button', { class: 'btn small primary', title: data.aiEnabled ? 'AI 读每篇正文，提炼 3–8 个核心概念，概念重合的笔记自动连起来' : '先在设置里开启智能归类', disabled: !data.aiEnabled, onclick: () => runConcepts() }, data.pendingConcepts ? `✨ AI 提炼关联（${data.pendingConcepts} 篇待处理）` : '✨ AI 提炼关联');
+  const runConcepts = async () => {
+    aiBtn.disabled = true; let doneN = 0, failN = 0;
+    try {
+      for (;;) {
+        const r = await api('POST', '/api/ai/concepts', { limit: 4 });
+        doneN += r.done.length; failN += r.failed.length;
+        aiBtn.textContent = `✨ 提炼中… 已完成 ${doneN}${r.left ? `，还剩 ${r.left}` : ''}`;
+        if (!r.left || (!r.done.length && r.failed.length)) break;
+      }
+      toast(failN ? `提炼完成 ${doneN} 篇，${failN} 篇失败` : `已为 ${doneN} 篇笔记提炼概念`);
+    } catch (err) { toast(err.message, true); }
+    data = await get('/api/graph'); drawCounts(); aiBtn.textContent = data.pendingConcepts ? `✨ AI 提炼关联（${data.pendingConcepts} 篇待处理）` : '✨ AI 提炼关联'; aiBtn.disabled = !data.aiEnabled;
+    if (!svgRoot.isConnected) { route(); return; }
+    rebuild();
+  };
+  page.append(el('div', { class: 'toolbar', style: 'border:none;padding-bottom:6px;margin-bottom:6px' }, legend, el('div', { class: 'spacer' }), search, relBtn, orphanBtn, aiBtn, el('button', { class: 'btn small', onclick: () => { userView = false; rebuild(true); } }, '↻ 重新布局')));
 
   const wrap = el('div', { class: 'graph-wrap' });
   const tipEl = el('div', { class: 'chart-tip hidden', style: 'top:auto' });
   const hint = el('div', { class: 'graph-hint muted' }, '拖动节点 · 滚轮缩放 · 拖动空白平移 · 点击打开笔记');
   page.append(wrap);
   main.append(topbar([{ label: '关系图' }]), page);
-  if (!data.edges.length) { wrap.append(el('div', { class: 'empty', style: 'padding:40px;text-align:center;font-size:14px' }, '还没有任何 [[链接]]。在正文里写 [[页面标题]] 把笔记连起来，这里就会长出一张图。')); return; }
+  if (!data.edges.length && !(showRelated && data.related.length)) {
+    wrap.append(el('div', { class: 'empty', style: 'padding:40px;text-align:center;font-size:14px;line-height:1.8' }, '还没有能画的关系。',
+      el('br'), data.aiEnabled ? '点「✨ AI 提炼关联」让 AI 读一遍每篇笔记，提炼核心概念并自动连线；' : '在 设置 → 智能归类 开启 AI 后，可一键让 AI 读每篇笔记提炼概念并自动连线；',
+      el('br'), '笔记多起来后，内容相近、标签或实体相同的笔记也会自动相连；正文里写 [[页面标题]] 则是实线。'));
+    if (!svgRoot.isConnected) return;
+  }
 
   // ---- simulation state ----
   const svgRoot = svg('svg', { class: 'graph' });
@@ -1225,7 +1250,7 @@ async function viewGraph(main, focus) {
   root.append(edgeLayer, nodeLayer);
   svgRoot.append(root);
   wrap.append(svgRoot, tipEl, hint);
-  let nodes = [], edges = [], byPath = new Map(), neighbors = new Map();
+  let nodes = [], edges = [], byPath = new Map(), neighbors = new Map(), edgeInfo = new Map();
   let view = { x: 0, y: 0, k: 1 };
   let alpha = 0, raf = null, hover = null;
   const W = () => wrap.clientWidth || 800, H = () => wrap.clientHeight || 600;
@@ -1235,9 +1260,19 @@ async function viewGraph(main, focus) {
   function rebuild(reshuffle = false) {
     fitHeight();
     const prev = byPath;
-    const visible = data.nodes.filter((n) => !hidden.has(n.notebook || '') && (showOrphans || n.degree > 0 || n.path === focusPath));
+    const linkKeys = new Set(data.edges.map((e) => [e.source, e.target].sort().join('\u0000')));
+    const all = [...data.edges.map((e) => ({ ...e, kind: 'link', w: 1 })), ...(showRelated ? data.related.filter((e) => !linkKeys.has([e.source, e.target].sort().join('\u0000'))).map((e) => ({ ...e, kind: 'related', w: e.weight })) : [])];
+    const degAll = new Map();
+    for (const e of all) { degAll.set(e.source, (degAll.get(e.source) || 0) + 1); degAll.set(e.target, (degAll.get(e.target) || 0) + 1); }
+    const visible = data.nodes.filter((n) => !hidden.has(n.notebook || '') && (showOrphans || degAll.get(n.path) > 0 || n.path === focusPath));
     const ok = new Set(visible.map((n) => n.path));
-    edges = data.edges.filter((e) => ok.has(e.source) && ok.has(e.target));
+    edges = all.filter((e) => ok.has(e.source) && ok.has(e.target));
+    edgeInfo = new Map();
+    for (const e of edges) {
+      const why = e.kind === 'link' ? '[[链接]]' : [e.reasons?.concepts?.length && `共同概念：${e.reasons.concepts.join('、')}`, e.reasons?.entities?.length && `同时提到 ${e.reasons.entities.join('、')}`, e.reasons?.tags?.length && `标签 ${e.reasons.tags.map((t) => '#' + t).join(' ')}`, e.reasons?.similarity >= 12 && `内容相似 ${e.reasons.similarity}%`].filter(Boolean).join(' · ');
+      for (const [me, other] of [[e.source, e.target], [e.target, e.source]]) (edgeInfo.get(me) || edgeInfo.set(me, []).get(me)).push({ other, why, w: e.w, kind: e.kind });
+    }
+    for (const list of edgeInfo.values()) list.sort((a, b) => b.w - a.w);
     const deg = new Map();
     for (const e of edges) { deg.set(e.source, (deg.get(e.source) || 0) + 1); deg.set(e.target, (deg.get(e.target) || 0) + 1); }
     const w = W(), h = H(), R = Math.min(w, h) * 0.38;
@@ -1252,7 +1287,11 @@ async function viewGraph(main, focus) {
     for (const e of edges) { (neighbors.get(e.source) || neighbors.set(e.source, new Set()).get(e.source)).add(e.target); (neighbors.get(e.target) || neighbors.set(e.target, new Set()).get(e.target)).add(e.source); }
     // (re)create elements
     edgeLayer.innerHTML = ''; nodeLayer.innerHTML = '';
-    for (const e of edges) { e.el = svg('line'); edgeLayer.append(e.el); }
+    for (const e of edges) {
+      e.el = svg('line', { class: e.kind === 'related' ? 'related' : '' });
+      if (e.kind === 'related') { e.el.style.strokeWidth = (1 + e.w * 2.6).toFixed(2); e.el.style.strokeOpacity = (0.4 + e.w * 0.5).toFixed(2); } // inline beats the stylesheet
+      edgeLayer.append(e.el);
+    }
     for (const n of nodes) {
       n.el = svg('g', { class: 'gn' + (n.path === focusPath ? ' focus' : '') });
       n.circle = svg('circle', { r: n.r, fill: notebookColor(n.notebook) });
@@ -1269,7 +1308,7 @@ async function viewGraph(main, focus) {
 
   function step() {
     const w = W(), h = H();
-    const k = Math.min(170, Math.sqrt((w * h) / Math.max(1, nodes.length)) * 0.8); // ideal edge length (Fruchterman–Reingold)
+    const k = Math.min(130, Math.sqrt((w * h) / Math.max(1, nodes.length)) * 0.6); // ideal edge length (Fruchterman–Reingold)
     for (const n of nodes) { n.vx = 0; n.vy = 0; }
     for (let i = 0; i < nodes.length; i++) {
       const a = nodes[i];
@@ -1286,13 +1325,13 @@ async function viewGraph(main, focus) {
     for (const e of edges) {
       const a = byPath.get(e.source), b = byPath.get(e.target);
       const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const f = (d * d) / k / d; // attraction d²/k
+      const f = ((d * d) / k / d) * (e.kind === 'related' ? 0.55 + e.w * 0.6 : 1); // attraction d²/k, a little weaker for soft relations
       a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
     }
     const t = 24 * alpha + 0.3; // temperature: max step per tick
     for (const n of nodes) {
       if (n.fixed) continue;
-      const g = n.deg ? 0.08 : 0.6; // gentle gravity so components stay together; orphans (no springs) are held much closer
+      const g = n.deg ? 0.3 : 0.6; // gravity keeps separate clusters on one screen; orphans (no springs) are held closer still
       n.vx += (w / 2 - n.x) * g; n.vy += (h / 2 - n.y) * g;
       const len = Math.sqrt(n.vx * n.vx + n.vy * n.vy) || 1;
       const step = Math.min(len, t) / len;
@@ -1310,7 +1349,7 @@ async function viewGraph(main, focus) {
     if (!nodes.length) return;
     const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y);
     const minX = Math.min(...xs) - 50, maxX = Math.max(...xs) + 50, minY = Math.min(...ys) - 30, maxY = Math.max(...ys) + 50;
-    const k = Math.min(1.4, Math.max(0.3, Math.min(W() / (maxX - minX), H() / (maxY - minY))));
+    const k = Math.min(1.6, Math.max(0.6, Math.min(W() / (maxX - minX), H() / (maxY - minY))));
     view = { k, x: W() / 2 - ((minX + maxX) / 2) * k, y: H() / 2 - ((minY + maxY) / 2) * k };
     applyView(); paint();
   }
@@ -1346,13 +1385,15 @@ async function viewGraph(main, focus) {
     n.el.addEventListener('pointerup', (e) => { if (!start) return; start = null; n.fixed = false; if (!moved) openPeek(n.path); });
     n.el.addEventListener('pointerenter', (e) => {
       hover = n; paint();
-      tipEl.innerHTML = ''; tipEl.append(el('div', { class: 'tv', style: 'font-size:13px' }, n.title), el('div', { class: 'td' }, `${nbOf(n.notebook)?.title || n.folder || '/'} · ${n.deg} 条链接${n.date ? ' · ' + n.date : ''}${n.source ? ' · ' + n.source : ''}`));
+      tipEl.innerHTML = ''; tipEl.append(el('div', { class: 'tv', style: 'font-size:13px' }, n.title), el('div', { class: 'td' }, `${nbOf(n.notebook)?.title || n.folder || '/'} · ${n.deg} 条关系${n.date ? ' · ' + n.date : ''}${n.source ? ' · ' + n.source : ''}`));
+      if (n.concepts?.length) tipEl.append(el('div', { class: 'td', style: 'margin-top:4px' }, '概念：' + n.concepts.slice(0, 6).join('、')));
+      for (const r of (edgeInfo.get(n.path) || []).slice(0, 3)) tipEl.append(el('div', { class: 'tr' }, el('div', { class: 'tn' }, `${r.kind === 'link' ? '—' : '┈'} ${byPath.get(r.other)?.title || r.other}`), el('div', { class: 'td' }, r.why)));
       tipEl.classList.remove('hidden'); moveTip(e);
     });
     n.el.addEventListener('pointermove', moveTip);
     n.el.addEventListener('pointerleave', () => { hover = null; paint(); tipEl.classList.add('hidden'); });
   }
-  function moveTip(e) { const r = wrap.getBoundingClientRect(); const x = e.clientX - r.left, y = e.clientY - r.top; tipEl.style.left = (x > r.width - 240 ? x - tipEl.offsetWidth - 14 : x + 14) + 'px'; tipEl.style.top = Math.max(4, y - 10) + 'px'; }
+  function moveTip(e) { const r = wrap.getBoundingClientRect(); const x = e.clientX - r.left, y = e.clientY - r.top; tipEl.style.left = (x > r.width - 240 ? x - tipEl.offsetWidth - 14 : x + 14) + 'px'; tipEl.style.top = Math.max(4, Math.min(y - 10, r.height - tipEl.offsetHeight - 8)) + 'px'; } // keep the card inside the frame
   let pan = null;
   svgRoot.addEventListener('pointerdown', (e) => { pan = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; svgRoot.setPointerCapture(e.pointerId); });
   svgRoot.addEventListener('pointermove', (e) => { if (!pan) return; userView = true; view.x = pan.vx + (e.clientX - pan.x); view.y = pan.vy + (e.clientY - pan.y); applyView(); });

@@ -332,7 +332,11 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
 .graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .graph:active { cursor: grabbing; }
 .graph .gl line { stroke: var(--text-3); stroke-opacity: .4; stroke-width: 1.2; transition: stroke-opacity .15s; }
-.graph .gl line.dim { stroke-opacity: .06; }
+.graph .gl line.dim { stroke-opacity: .06 !important; }
+.graph .gl line.related { stroke: var(--accent); stroke-dasharray: 4 3; stroke-linecap: round; }
+.chart-tip .tr { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border-2); }
+.chart-tip .tn { font-size: 12px; color: var(--text); line-height: 1.35; }
+.chart-tip .tr .td { white-space: normal; line-height: 1.4; margin-top: 1px; }
 .graph .gn { cursor: pointer; transition: opacity .15s; }
 .graph .gn circle { stroke: var(--bg-sub); stroke-width: 1.5; }
 .graph .gn .hitarea { fill: transparent; stroke: none; }
