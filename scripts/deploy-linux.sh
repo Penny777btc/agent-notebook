@@ -6,7 +6,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/Penny777btc/agent-notebook/main/scripts/deploy-linux.sh | bash
 #   or: bash scripts/deploy-linux.sh
 #
-# Tunables (env): APP_DIR, PORT, CODE_REPO, VAULT_REPO, SKIP_TAILSCALE=1
+# Tunables (env): APP_DIR, PORT, CODE_REPO, VAULT_REPO, SKIP_TAILSCALE=1, TZ_NAME (journal clock, e.g. Asia/Tokyo)
+# Run it as a dedicated unprivileged user (e.g. `sudo useradd -m notebook`, then `sudo -u notebook -H bash`), not as
+# an account with sudo: the service only needs its own home.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/agent-notebook}"
@@ -78,6 +80,7 @@ fi
 
 say "4/6 systemd service ($SERVICE, 127.0.0.1:$PORT)"
 NODE_BIN="$(command -v node)"
+mkdir -p "$HOME/.grok" "$HOME/.claude" "$HOME/.codex" "$HOME/.cache" "$HOME/.config"
 sudo tee /etc/systemd/system/$SERVICE.service >/dev/null <<EOF
 [Unit]
 Description=Agent Notebook (web UI + REST + MCP)
@@ -89,10 +92,17 @@ Type=simple
 User=$USER
 WorkingDirectory=$APP_DIR
 Environment=NODE_ENV=production
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin
+Environment=TZ=${TZ_NAME:-$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo UTC)}
+Environment=HOME=$HOME
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$HOME/.grok/bin
 ExecStart=$NODE_BIN $APP_DIR/src/cli.js serve --host 127.0.0.1 --port $PORT
 Restart=always
 RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=$APP_DIR/vault $HOME/.grok $HOME/.claude $HOME/.codex $HOME/.cache $HOME/.config
 
 [Install]
 WantedBy=multi-user.target
