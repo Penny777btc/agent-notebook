@@ -956,7 +956,10 @@ async function viewAgents(main) {
     el('label', {}, '限制文件夹'), folders,
     el('div', { class: 'actions' }, el('button', { class: 'btn primary', onclick: async () => {
       try {
-        const r = await api('POST', '/api/agents/snippets', { name: name.value.trim(), scopes: ['read', sWrite.checked && 'write'].filter(Boolean), folders: folders.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
+        const body = { name: name.value.trim(), scopes: ['read', sWrite.checked && 'write'].filter(Boolean), folders: folders.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
+        let r;
+        try { r = await api('POST', '/api/agents/snippets', body); }
+        catch (err) { if (!/already exists/.test(err.message) || !confirm(`「${body.name}」已经有 token 了。重新生成会让旧的失效，继续？`)) throw err; r = await api('POST', '/api/agents/snippets', { ...body, replace: true }); }
         out.innerHTML = ''; out.append(el('div', { class: 'token-box' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r))); name.value = '';
       } catch (err) { toast(err.message, true); }
     } }, '生成配置'))), out));
@@ -992,7 +995,7 @@ function agentCard(a) {
     actions.append(el('div', { style: 'flex:1' }));
     actions.append(el('button', { class: 'btn small primary', onclick: async (e) => {
       const btn = e.currentTarget; btn.disabled = true;
-      try { const r = await api('POST', '/api/agents/snippets', { name: a.id, scopes: ['read', 'write'], folders: [] }); result.innerHTML = ''; result.append(el('div', { class: 'token-box', style: 'margin-top:10px;font-size:13px' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r))); }
+      try { const r = await api('POST', '/api/agents/snippets', { name: a.id, scopes: ['read', 'write'], folders: [], replace: true }); result.innerHTML = ''; result.append(el('div', { class: 'token-box', style: 'margin-top:10px;font-size:13px' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r))); }
       catch (err) { toast(err.message, true); }
       btn.disabled = false;
     } }, '生成配置'));

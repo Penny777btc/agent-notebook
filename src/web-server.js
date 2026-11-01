@@ -206,9 +206,12 @@ export function createApp({ vault, auth, backup }) {
   });
   api.post('/agents/snippets', guard('admin'), (req, res) => {
     // token for an agent we can't auto-configure: create it and return copy-paste snippets
-    const { name, scopes, folders } = req.body || {};
+    const { name, scopes, folders, replace } = req.body || {};
+    const exists = auth.listTokens().some((t) => t.name === name);
+    if (exists && !replace) return res.status(409).json({ error: `token "${name}" already exists`, exists: true });
+    if (exists) { auth.revokeToken(name); auth.audit(req.principal, 'revoke_token', name, { via: 'agents', reason: 'regenerated' }); }
     const t = auth.createToken(name, { scopes: scopes?.length ? scopes : ['read', 'write'], folders: (folders || []).filter(Boolean) });
-    auth.audit(req.principal, 'create_token', name, { scopes: t.scopes, folders: t.folders, via: 'agents' });
+    auth.audit(req.principal, 'create_token', name, { scopes: t.scopes, folders: t.folders, via: 'agents', replaced: exists });
     const entry = serverEntry({ token: t.token, vault: vault.root });
     // use the address the owner is browsing from (a tunnel host when set up remotely), else loopback
     const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
