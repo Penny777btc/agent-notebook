@@ -660,13 +660,15 @@ async function noteEditor(note, { onSaved } = {}) {
   const nb = note.notebook ? nbOf(note.notebook.folder) : null;
   let saving = false;
   let updatedEl = null;
+  let drawDateline = null;
   const save = async (patch) => {
     if (saving) return;
     saving = true;
     try {
       const updated = await api('PATCH', notePath(note.path), patch);
       Object.assign(note, updated);
-      if (updatedEl) updatedEl.textContent = `${fmtTime(note.properties.updated)}  ·  创建 ${fmtTime(note.properties.created)}  ·  ${note.path}`;
+      if (updatedEl) updatedEl.textContent = `更新 ${fmtTime(note.properties.updated)} · 创建 ${fmtTime(note.properties.created)} · ${note.path}`;
+      drawDateline?.();
       toast('已保存'); onSaved?.(note);
     } catch (err) { toast(err.message, true); }
     finally { saving = false; }
@@ -680,7 +682,20 @@ async function noteEditor(note, { onSaved } = {}) {
   const p = note.properties;
   if (nb?.inbox) page.append(el('div', { class: 'inbox-item', style: 'margin-bottom:14px' }, el('span', { class: 'muted', style: 'font-size:13px' }, '这条还在收件箱。'), assignChips({ path: note.path, suggested: p.suggested || [] }, { onDone: async () => { await loadSidebar(); closePeek(); location.hash = '#/'; } })));
 
-  const props = el('div', { class: 'props' });
+  // Masthead: one quiet line of metadata under the headline; the editable property grid unfolds on demand.
+  const props = el('div', { class: 'props collapsed' });
+  const dateline = el('div', { class: 'dateline' });
+  drawDateline = () => {
+    const q = note.properties; const parts = [];
+    if (nb) parts.push(el('a', { href: nbHref(nb.folder) }, `${nb.icon} ${nb.title}`));
+    if (q.status) parts.push(el('span', { class: 'chip status' }, q.status));
+    if (q.date) parts.push(el('span', {}, q.date.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$1 年 $2 月 $3 日')));
+    for (const src of (q.sources?.length ? q.sources : q.source ? [q.source] : [])) parts.push(chipSource(src));
+    if (q.tags?.length) parts.push(el('span', { class: 'tags', title: q.tags.join(', ') }, q.tags.slice(0, 6).map((t) => '#' + t).join('  ') + (q.tags.length > 6 ? `  +${q.tags.length - 6}` : '')));
+    dateline.innerHTML = '';
+    dateline.append(el('div', { class: 'dl' }, parts.flatMap((x, i) => i ? [el('span', { class: 'dot' }, '·'), x] : [x])),
+      el('button', { class: 'mini-btn', title: '编辑标签、日期等属性', onclick: () => { props.classList.toggle('collapsed'); drawDateline(); } }, props.classList.contains('collapsed') ? '属性 ▾' : '收起 ▴'));
+  };
   const row = (label, icon, valueNode) => props.append(el('div', { class: 'k' }, el('span', {}, icon), label), el('div', { class: 'v' }, valueNode));
   if (nb?.kind === 'board' && nb.columns) {
     row('状态', '◎', el('select', { onchange: (e) => save({ status: e.target.value }) }, nb.columns.map((c) => el('option', { value: c, selected: c === p.status }, c))));
@@ -712,9 +727,9 @@ async function noteEditor(note, { onSaved } = {}) {
     props.append(kEl, cell);
   }
   props.append(el('div', { class: 'add-prop', onclick: async () => { const k = prompt('属性名'); if (!k) return; const v = prompt(`「${k}」的值`) ?? ''; await save({ [k]: v }); page.replaceWith(await noteEditor(note, { onSaved })); } }, '＋ 添加属性'));
-  updatedEl = el('div', { class: 'v muted', style: 'font-size:13px' }, `${fmtTime(p.updated)}  ·  创建 ${fmtTime(p.created)}  ·  ${note.path}`);
-  props.append(el('div', { class: 'k' }, el('span', {}, '🕒'), '更新'), updatedEl);
-  page.append(props, el('hr', { class: 'divider' }));
+  updatedEl = el('div', { class: 'colophon' }, `更新 ${fmtTime(p.updated)} · 创建 ${fmtTime(p.created)} · ${note.path}`);
+  drawDateline();
+  page.append(dateline, props);
 
   const bodyWrap = el('div');
   const linksBox = el('div', { class: 'links-box' });
@@ -750,7 +765,7 @@ async function noteEditor(note, { onSaved } = {}) {
     ta.focus(); ta.style.height = Math.max(300, ta.scrollHeight + 40) + 'px';
   };
   showView(); drawLinks();
-  page.append(bodyWrap, linksBox);
+  page.append(bodyWrap, updatedEl, linksBox);
   return page;
 }
 

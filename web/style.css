@@ -434,17 +434,26 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
 .md img + em { display: block; text-align: center; font-family: var(--font); font-style: normal; font-size: 12.5px; color: var(--text-3); margin-top: -.9em; margin-bottom: 1.4em; }
 .md input[type=checkbox] { margin-right: .5em; vertical-align: -.05em; }
 
-/* the article page: title, a ruled colophon of properties, then the measured column */
+/* the article page: headline, one dateline between two rules, the measured column, a small colophon */
 .article-page { max-width: 760px; }
-.article-page .page-title { font-family: var(--serif); font-size: 40px; font-weight: 700; line-height: 1.12; letter-spacing: -.004em; margin: 8px 0 16px; text-wrap: balance; }
-.article-page .props { grid-template-columns: 96px 1fr; gap: 0 12px; font-family: var(--font); border-top: 1.5px solid var(--text); border-bottom: 1px solid var(--border); padding: 6px 0; margin: 0 0 30px; font-size: 13.5px; }
-.article-page .props .k { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); font-weight: 600; padding: 7px 0; }
+.article-page .page-title { font-family: var(--serif); font-size: 40px; font-weight: 700; line-height: 1.12; letter-spacing: -.004em; margin: 8px 0 14px; text-wrap: balance; }
+.dateline { display: flex; align-items: center; gap: 10px; font-family: var(--font); font-size: 13px; color: var(--text-2); letter-spacing: .01em; border-top: 1.5px solid var(--text); border-bottom: 1px solid var(--border); padding: 9px 0; margin: 0 0 34px; }
+.dateline .dl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; flex: 1; min-width: 0; line-height: 20px; }
+.dateline .dl a:hover { color: var(--text); } .dateline .dot { color: var(--text-3); } .dateline .tags { color: var(--text-3); }
+.dateline .chip { font-size: 11.5px; }
+.dateline .mini-btn { font-size: 12px; white-space: nowrap; }
+.article-page .props { grid-template-columns: 90px 1fr; gap: 0 12px; font-family: var(--font); font-size: 13.5px; background: var(--bg-sub); border-radius: var(--r); padding: 10px 16px; margin: -22px 0 34px; }
+.article-page .props.collapsed { display: none; }
+.article-page .props .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); font-weight: 600; padding: 7px 0; }
 .article-page .props .k > span:first-child { display: none; }
 .article-page .props .v { min-height: 28px; }
+.article-page .props .v input, .article-page .props .v select { border-color: transparent; }
 .article-page .body-view { padding: 2px 0; }
+.article-page .md > :first-child { margin-top: 0; }
+.colophon { font-family: var(--font); font-size: 12px; color: var(--text-3); margin-top: 40px; padding-top: 10px; border-top: 1px solid var(--border-2); letter-spacing: .01em; word-break: break-all; }
 .article-page .body-view > p:first-child { font-size: 19.5px; line-height: 1.7; margin-bottom: .7em; }
 .article-page .body-view.dropcap > p:first-child::first-letter { float: left; font-family: var(--serif); font-size: 3.35em; line-height: .82; font-weight: 700; padding: .1em .12em 0 0; color: var(--text); }
-.article-page .links-box { font-family: var(--font); border-top: 1.5px solid var(--text); }
+.article-page .links-box { font-family: var(--font); border-top: none; margin-top: 10px; padding-top: 0; }
 .peek .md { font-size: 16px; line-height: 1.8; }
 .peek .article-page .page-title { font-size: 30px; }
 .peek .article-page .body-view > p:first-child { font-size: 17.5px; }
@@ -471,7 +480,8 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
   .md { font-size: 16.5px; line-height: 1.8; text-align: left; hyphens: manual; }
   .article-page .page-title { font-size: 30px; }
   .article-page .body-view > p:first-child { font-size: 18px; }
-  .article-page .props { grid-template-columns: 1fr; }
+  .article-page .props { grid-template-columns: 1fr; margin-top: -18px; }
+  .dateline { margin-bottom: 26px; }
   .entry, .journal-day .entry { padding-left: 0; }
   .entry-head .time, .journal-day .entry-head .time { position: static; font-size: 13px; }
   .entry-head .etitle { font-size: 18px; flex-basis: 100%; order: 2; } .entry-head .chip.source { order: 1; margin-left: auto; }
