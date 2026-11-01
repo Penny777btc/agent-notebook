@@ -226,7 +226,9 @@ function captureBox({ notebook } = {}) {
     } catch (err) { toast(err.message, true); }
   };
   ta.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') send(); });
-  return el('div', { class: 'capture' }, ta, el('div', { class: 'row' }, sel, status, el('div', { style: 'flex:1' }), el('span', { class: 'muted', style: 'font-size:12px' }, '⌘↵'), el('button', { class: 'btn small primary', onclick: send }, '记录')));
+  const box = el('div', { class: 'capture' + (notebook ? ' compact' : '') }, ta, el('div', { class: 'row' }, sel, status, el('div', { style: 'flex:1' }), el('span', { class: 'muted', style: 'font-size:12px' }, '⌘↵'), el('button', { class: 'btn small primary', onclick: send }, '记录')));
+  if (notebook) { ta.rows = 1; box.addEventListener('focusin', () => box.classList.add('open')); box.addEventListener('focusout', () => { if (!ta.value.trim()) box.classList.remove('open'); }); }
+  return box;
 }
 
 function aiOrganizeButton() {
@@ -264,15 +266,18 @@ async function viewHome(main) {
   try {
     const ag = await get('/api/agents');
     const todo = ag.agents.filter((a) => a.detected && !a.connected && a.canWrite);
-    if (todo.length) page.append(el('a', { class: 'card-box banner', href: '#/agents' }, el('span', { style: 'font-size:22px' }, '🔌'),
-      el('div', {}, el('div', { style: 'font-weight:600' }, `检测到 ${todo.length} 个本地 agent 还没接入`), el('div', { class: 'muted', style: 'font-size:13px' }, todo.map((a) => a.name).join(' · '))), el('span', { class: 'muted', style: 'margin-left:auto' }, '→')));
+    const dismissed = localStorage.getItem('banner:agents') || '';
+    const key = todo.map((a) => a.name).sort().join(',');
+    if (todo.length && dismissed !== key) page.append(el('div', { class: 'card-box banner' }, el('span', { style: 'font-size:20px' }, '🔌'),
+      el('a', { href: '#/agents', style: 'flex:1;min-width:0' }, el('div', { style: 'font-weight:600' }, `检测到 ${todo.length} 个本地 agent 还没接入`), el('div', { class: 'muted', style: 'font-size:13px' }, todo.map((a) => a.name).join(' · ') + ' · 点击一键接入')),
+      el('button', { class: 'icon-btn', title: '不再提示', onclick: (e) => { localStorage.setItem('banner:agents', key); e.currentTarget.closest('.banner').remove(); } }, '✕')));
   } catch {}
 
   // inbox
   const inbox = state.notebooks.find((n) => n.inbox);
   if (inbox && inbox.count) {
     const items = await get(`/api/notes?folder=${encodeURIComponent(inbox.folder)}&recursive=false&limit=50`);
-    page.append(el('div', { class: 'feed-head' }, el('span', {}, inbox.icon), el('a', { href: nbHref(inbox.folder) }, '收件箱'), el('span', { class: 'n' }, `${items.length} 条待归类`), el('div', { class: 'spacer' }), aiOrganizeButton()));
+    page.append(el('div', { class: 'feed-head' }, el('a', { href: nbHref(inbox.folder) }, `${inbox.icon} 收件箱`), el('span', { class: 'n' }, `${items.length} 条待归类`), el('div', { class: 'spacer' }), aiOrganizeButton()));
     for (const n of items) {
       page.append(el('div', { class: 'inbox-item' },
         el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtClock(n.created)),
@@ -294,14 +299,12 @@ async function viewHome(main) {
   if (!groups.length) page.append(el('div', { class: 'empty', style: 'padding:24px 0' }, d === today() ? '今天还没有 agent 记录任何内容。在上面记一条，或者让某个 agent 帮你记。' : '这一天没有记录。'));
   for (const g of groups) page.append(feedGroup(g));
 
-  // notebooks grid
-  page.append(el('h2', { style: 'font-size:16px;margin:28px 0 8px' }, '笔记本'));
-  const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:0 0 20px' });
-  for (const nb of state.notebooks) grid.append(el('a', { class: 'card-box', href: nbHref(nb.folder), style: 'margin:0;padding:14px 16px' },
-    el('div', { style: 'display:flex;align-items:center;gap:8px' }, el('span', { style: 'font-size:22px' }, nb.icon), el('span', { style: 'font-weight:600' }, nb.title), el('span', { class: 'muted', style: 'margin-left:auto;font-size:12px' }, nb.count)),
-    el('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, KIND_LABEL[nb.kind] + (nb.description ? ' · ' + nb.description.slice(0, 40) : ''))));
-  grid.append(el('a', { class: 'card-box', href: '#', style: 'margin:0;padding:14px 16px;color:var(--text-3);box-shadow:inset 0 0 0 1.5px var(--border-2);background:transparent', onclick: (e) => { e.preventDefault(); notebookDialog(); } }, el('div', { style: 'font-weight:600' }, '＋ 新建笔记本')));
-  page.append(grid);
+  // notebooks: a table of contents
+  page.append(el('div', { class: 'feed-head', style: 'margin-top:34px' }, el('span', {}, '笔记本'), el('div', { class: 'spacer' }), el('button', { class: 'btn small', onclick: () => notebookDialog() }, '＋ 新建')));
+  const toc = el('div', { class: 'toc' });
+  for (const nb of state.notebooks) toc.append(el('a', { class: 'toc-item', href: nbHref(nb.folder) },
+    el('span', { class: 'emoji' }, nb.icon), el('span', { class: 't' }, nb.title), el('span', { class: 'd' }, KIND_LABEL[nb.kind] + (nb.description ? ' · ' + nb.description.slice(0, 48) : '')), el('span', { class: 'n' }, nb.count ?? nb.total ?? '')));
+  page.append(toc);
   main.append(topbar([{ label: '今天' }]), page);
 }
 
@@ -321,7 +324,7 @@ function clampEntries(card) {
 function feedGroup(g) {
   const nb = g.notebook;
   const box = el('div', { class: 'feed-group' });
-  box.append(el('div', { class: 'feed-head' }, el('span', {}, nb.icon), el('a', { href: nbHref(nb.folder) }, nb.title), el('span', { class: 'n' }, nb.kind === 'journal' ? `${g.items.reduce((n, i) => n + (i.entries || 1), 0)} 条` : `${g.items.length} 条`)));
+  box.append(el('div', { class: 'feed-head' }, el('a', { href: nbHref(nb.folder) }, `${nb.icon} ${nb.title}`), el('span', { class: 'n' }, nb.kind === 'journal' ? `${g.items.reduce((n, i) => n + (i.entries || 1), 0)} 条` : `${g.items.length} 条`)));
   for (const it of g.items) {
     if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
     else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
@@ -379,9 +382,10 @@ async function viewNotebook(main, folder) {
   let view = localStorage.getItem('view:' + folder) || defaultView;
   if ((view === 'kanban' && nb.kind !== 'board') || (view === 'chart' && !hasChart)) view = defaultView;
   const page = el('div', { class: 'page wide' });
-  page.append(el('div', { style: 'display:flex;align-items:center;gap:12px' }, el('div', { class: 'page-icon', style: 'font-size:40px;margin:0' }, nb.icon),
-    el('div', {}, el('h1', { class: 'page-title', style: 'margin:0' }, nb.title), el('div', { class: 'muted', style: 'font-size:13px' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词：' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`))));
-  if (nb.description) page.append(el('p', { class: 'page-desc', style: 'margin-top:8px' }, nb.description));
+  page.append(el('div', { class: 'nb-head' }, el('span', { class: 'page-icon' }, nb.icon),
+    el('div', { style: 'min-width:0' }, el('h1', { class: 'page-title' }, nb.title),
+      el('div', { class: 'nb-meta' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词 ' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`))));
+  if (nb.description) page.append(el('p', { class: 'standfirst' }, nb.description));
 
   const setDate = (d) => { state.nbDate = { ...(state.nbDate || {}), [folder]: d }; route(); };
   const setView = (v) => { localStorage.setItem('view:' + folder, v); route(); };
@@ -616,7 +620,7 @@ async function kanban(folder, dateFilter) {
     colEl.append(el('div', { class: 'col-head' }, el('span', { class: 'chip status' }, col.name), el('span', { class: 'count' }, col.cards.length),
       el('button', { class: 'mini-btn add', title: '在此列新建', onclick: () => newNoteDialog({ folder, columns: board.columns.map((c) => c.name), status: col.name }) }, '＋')));
     for (const card of col.cards) colEl.append(cardEl(card));
-    if (!col.cards.length) colEl.append(el('div', { class: 'empty' }, '拖动卡片到这里'));
+    if (!col.cards.length) colEl.append(el('div', { class: 'empty well' }, '空 · 把卡片拖到这里'));
     colEl.addEventListener('dragover', (e) => { e.preventDefault(); colEl.classList.add('drag-over'); });
     colEl.addEventListener('dragleave', () => colEl.classList.remove('drag-over'));
     colEl.addEventListener('drop', async (e) => {
@@ -1361,7 +1365,12 @@ $('#new-notebook').onclick = () => notebookDialog();
 $('#search').addEventListener('focus', (e) => { e.target.blur(); searchDialog(); });
 $('#collapse').onclick = () => $('#sidebar').classList.add('collapsed');
 $('#expand').onclick = () => $('#sidebar').classList.remove('collapsed');
-document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchDialog(); } });
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchDialog(); return; }
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
+  if (e.key === 'Escape' && !typing) { if (!$('#peek').classList.contains('hidden')) closePeek(); document.body.classList.remove('drawer-open'); }
+  if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey) { e.preventDefault(); searchDialog(); }
+});
 window.addEventListener('hashchange', () => { closePeek(); document.body.classList.remove('drawer-open'); route(); });
 document.addEventListener('click', (e) => { if (document.body.classList.contains('drawer-open') && !e.target.closest('#sidebar') && !e.target.closest('.menu-btn')) document.body.classList.remove('drawer-open'); });
 loadSidebar().then(route).catch(() => {}); // a 401 here already opened the login screen
