@@ -53,11 +53,18 @@ export function createApp({ vault, auth, backup }) {
   });
 
   // ---- MCP over Streamable HTTP ---------------------------------------
-  app.all('/mcp', async (req, res) => {
-    if (!req.principal || req.principal.kind !== 'token') {
-      return res.status(401).json({ error: 'Bearer token required for /mcp' });
+  // /mcp with a bearer header, or /mcp/<token> for clients that cannot set headers
+  // (custom connectors in the Claude / ChatGPT apps). Over HTTPS the URL form is as private as the header.
+  app.all(['/mcp', '/mcp/:token'], async (req, res) => {
+    let principal = req.principal;
+    if (req.params.token) {
+      principal = auth.authenticate(req.params.token);
+      if (!principal) { auth.audit({ name: 'anonymous' }, 'mcp:denied', 'url-token', { ip: req.socket.remoteAddress }); return res.status(401).json({ error: 'invalid token in URL' }); }
     }
-    const server = buildMcpServer({ vault, auth, principal: req.principal });
+    if (!principal || principal.kind !== 'token') {
+      return res.status(401).json({ error: 'Bearer token required for /mcp (or use /mcp/<token>)' });
+    }
+    const server = buildMcpServer({ vault, auth, principal });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close(); server.close(); });
     await server.connect(transport);
@@ -175,7 +182,11 @@ export function createApp({ vault, auth, backup }) {
     const t = auth.createToken(name, { scopes: scopes?.length ? scopes : ['read', 'write'], folders: (folders || []).filter(Boolean) });
     auth.audit(req.principal, 'create_token', name, { scopes: t.scopes, folders: t.folders, via: 'agents' });
     const entry = serverEntry({ token: t.token, vault: vault.root });
-    res.status(201).json({ ...t, httpUrl: `http://127.0.0.1:${req.socket.localPort}/mcp`, json: { mcpServers: { 'agent-notebook': entry.json } }, toml: entry.toml, claudeCmd: `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${t.token} -e AGENT_NOTEBOOK_VAULT="${vault.root}" -- node "${entry.json.args[0]}" mcp` });
+    // use the address the owner is browsing from (a tunnel host when set up remotely), else loopback
+    const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+    const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${req.socket.localPort}`;
+    const base = `${proto}://${host}`;
+    res.status(201).json({ ...t, httpUrl: `${base}/mcp`, tokenUrl: `${base}/mcp/${t.token}`, json: { mcpServers: { 'agent-notebook': entry.json } }, toml: entry.toml, claudeCmd: `claude mcp add agent-notebook -e AGENT_NOTEBOOK_TOKEN=${t.token} -e AGENT_NOTEBOOK_VAULT="${vault.root}" -- node "${entry.json.args[0]}" mcp` });
   });
   // remote-access settings: owner password, bind address, LAN addresses
   api.get('/access/settings', guard('admin'), (req, res) => res.json(accessSettings(req)));

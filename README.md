@@ -94,7 +94,11 @@ Copy `skills/agent-notebook/` into `~/.claude/skills/` so Claude Code knows the 
 
 ### Remote agents (HTTP)
 
-While `serve` runs, `POST http://127.0.0.1:3777/mcp` with `Authorization: Bearer nb_xxx` is a Streamable HTTP MCP endpoint. Bind to another host with `--host 0.0.0.0` (put it behind a tunnel or reverse proxy with TLS; the web UI is owner-only from loopback, everything else needs a token).
+While `serve` runs, `POST http://127.0.0.1:3777/mcp` with `Authorization: Bearer nb_xxx` is a Streamable HTTP MCP endpoint. Clients that cannot set headers — the **custom connectors in the Claude and ChatGPT phone apps** — use the token-in-URL form instead: `https://<your-tunnel-host>/mcp/nb_xxx` (shown as 方式 A′ on the 接入 Agent page; over HTTPS it is as private as the header). Hosted agents (a Grok bot, a Zapier/Make flow, …) need a public HTTPS address: a Cloudflare named tunnel on your own domain is the durable option, `cloudflared tunnel --url http://127.0.0.1:3777` the quick one (the address changes on every run).
+
+### Capture from any phone app (iOS Shortcut)
+
+Create a token (接入 Agent → 其他 agent, name it `iphone-shortcut`, write scope), then a Shortcut with one action **Get Contents of URL**: method `POST`, URL `https://<host>/api/capture`, header `Authorization: Bearer nb_xxx`, JSON body `{ "text": Shortcut Input, "source": "iphone-shortcut" }`. Enable *Show in Share Sheet* for text — selecting text in Grok, Safari or WeChat → Share → the Shortcut files it through the same router as every other agent. Bind to another host with `--host 0.0.0.0` (put it behind a tunnel or reverse proxy with TLS; the web UI is owner-only from loopback, everything else needs a token).
 
 ## MCP tools
 
