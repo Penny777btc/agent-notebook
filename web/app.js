@@ -85,13 +85,38 @@ function linkify(md) {
       : `<a class="wikilink missing" href="#" data-missing="${esc(name.trim())}" title="还没有这一页">${text}</a>`;
   }).replace(/\[([^\[\]:\n]{1,40}?)::\s*([^\]\n]+?)\]/g, (m, k, v) => `<span class="field"><span class="fk">${esc(k.trim())}</span>${esc(v.trim())}</span>`); // [amount:: 35] inline fields
 }
-function renderMd(md) {
+function renderMd(md, { journal = false } = {}) {
   const html = marked.parse(linkify(md), { gfm: true, breaks: true });
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script,iframe,object,embed,style').forEach((n) => n.remove());
   doc.querySelectorAll('*').forEach((n) => { for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (a.name === 'href' && /^javascript:/i.test(a.value))) n.removeAttribute(a.name); });
   doc.querySelectorAll('a[href^="http"]').forEach((a) => { a.target = '_blank'; a.rel = 'noopener'; });
+  if (journal) journalEntriesHtml(doc);
   return doc.body.innerHTML;
+}
+/** Journal pages: each "## HH:MM · title <small>source</small>" plus what follows becomes a readable entry block. */
+function journalEntriesHtml(doc) {
+  const body = doc.body;
+  const nodes = [...body.childNodes];
+  const isHead = (n) => n.nodeType === 1 && n.tagName === 'H2' && /^\s*\d{2}:\d{2}/.test(n.textContent);
+  if (!nodes.some(isHead)) return;
+  body.innerHTML = '';
+  let section = null;
+  for (const n of nodes) {
+    if (isHead(n)) {
+      section = doc.createElement('section'); section.className = 'entry';
+      const small = n.querySelector('small'); const source = small ? small.textContent.trim() : ''; if (small) small.remove();
+      const m = n.textContent.trim().match(/^(\d{2}:\d{2})\s*(?:·\s*(.*))?$/s);
+      const head = doc.createElement('div'); head.className = 'entry-head';
+      const time = doc.createElement('span'); time.className = 'time'; time.textContent = m ? m[1] : '';
+      const title = doc.createElement('span'); title.className = 'etitle'; title.textContent = (m && m[2] ? m[2] : '').trim();
+      head.append(time, title);
+      if (source) { const chip = doc.createElement('span'); chip.className = 'chip source'; chip.textContent = source; head.append(chip); }
+      section.append(head);
+      body.append(section);
+    } else if (section) section.append(n);
+    else body.append(n);
+  }
 }
 document.addEventListener('click', async (e) => {
   const a = e.target.closest('a.wikilink.missing');
@@ -270,7 +295,7 @@ function feedGroup(g) {
   const box = el('div', { class: 'feed-group' });
   box.append(el('div', { class: 'feed-head' }, el('span', {}, nb.icon), el('a', { href: nbHref(nb.folder) }, nb.title), el('span', { class: 'n' }, nb.kind === 'journal' ? `${g.items.reduce((n, i) => n + (i.entries || 1), 0)} 条` : `${g.items.length} 条`)));
   for (const it of g.items) {
-    if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body) })));
+    if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) })));
     else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
       el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 120))),
       el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 2).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
@@ -372,7 +397,7 @@ function timeline(nb) {
   for (const [d, items] of [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0]))) {
     box.append(el('div', { class: 'timeline-date' }, d === today() ? `今天 · ${d}` : d));
     for (const it of items) {
-      if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body) })));
+      if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) })));
       else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
         el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 140))),
         el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 3).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
@@ -636,10 +661,26 @@ async function noteEditor(note, { onSaved } = {}) {
   row('日期', '📅', el('input', { type: 'date', value: p.date || '', onchange: (e) => save({ date: e.target.value }) }));
   for (const [k, v] of Object.entries(p)) {
     if (SYSTEM_PROPS.includes(k)) continue;
-    const inp = el('input', { value: typeof v === 'object' ? JSON.stringify(v) : String(v), onblur: (e) => { if (e.target.value !== String(v)) save({ [k]: e.target.value }); } });
-    const kEl = el('div', { class: 'k' }, el('span', {}, '≡'), k);
-    const del = el('button', { class: 'mini-btn', title: '删除属性', onclick: () => save({ [k]: null }).then(() => { inp.closest('.v').remove(); kEl.remove(); }) }, '✕');
-    props.append(kEl, el('div', { class: 'v' }, inp, del));
+    const kEl = el('div', { class: 'k' }, el('span', {}, typeof v === 'number' ? '#' : Array.isArray(v) ? '☰' : '≡'), k);
+    const cell = el('div', { class: 'v' });
+    const del = el('button', { class: 'mini-btn', title: '删除属性', onclick: () => save({ [k]: null }).then(() => { cell.remove(); kEl.remove(); }) }, '✕');
+    if (v !== null && typeof v === 'object') {
+      // arrays / objects: show as readable chips; edit as JSON on demand
+      const showChips = () => {
+        cell.innerHTML = '';
+        cell.append(propChips(v), el('button', { class: 'mini-btn', title: '以 JSON 编辑', onclick: showJson }, '✎'), del);
+      };
+      const showJson = () => {
+        cell.innerHTML = '';
+        const ta = el('textarea', { class: 'body-edit', style: 'min-height:60px;font-size:12.5px;padding:6px 8px;flex:1' }, JSON.stringify(v, null, 1));
+        cell.append(ta, el('button', { class: 'btn small', onclick: showChips }, '取消'), el('button', { class: 'btn small primary', onclick: async () => { let parsed; try { parsed = JSON.parse(ta.value); } catch { toast('不是合法的 JSON', true); return; } await save({ [k]: parsed }); Object.assign(v, parsed); showChips(); } }, '保存'));
+      };
+      showChips();
+    } else {
+      const inp = el('input', { value: String(v), onblur: (e) => { if (e.target.value !== String(v)) save({ [k]: e.target.value }); } });
+      cell.append(inp, del);
+    }
+    props.append(kEl, cell);
   }
   props.append(el('div', { class: 'add-prop', onclick: async () => { const k = prompt('属性名'); if (!k) return; const v = prompt(`「${k}」的值`) ?? ''; await save({ [k]: v }); page.replaceWith(await noteEditor(note, { onSaved })); } }, '＋ 添加属性'));
   updatedEl = el('div', { class: 'v muted', style: 'font-size:13px' }, `${fmtTime(p.updated)}  ·  创建 ${fmtTime(p.created)}  ·  ${note.path}`);
@@ -659,7 +700,7 @@ async function noteEditor(note, { onSaved } = {}) {
   };
   const showView = () => {
     bodyWrap.innerHTML = '';
-    const v = el('div', { class: 'body-view md', html: renderMd(note.body) });
+    const v = el('div', { class: 'body-view md' + (nb?.kind === 'journal' ? ' journal-body' : ''), html: renderMd(note.body, { journal: nb?.kind === 'journal' }) });
     v.addEventListener('click', (e) => { if (e.target.closest('a,input')) return; showEdit(); });
     bodyWrap.append(v);
   };
@@ -679,6 +720,15 @@ async function noteEditor(note, { onSaved } = {}) {
   showView(); drawLinks();
   page.append(bodyWrap, linksBox);
   return page;
+}
+
+/** Array → chips, object → key: value chips, used for structured property values. */
+function propChips(v) {
+  const wrap = el('div', { class: 'prop-chips' });
+  const fmt = (x) => typeof x === 'number' ? x.toLocaleString('en-US', { maximumFractionDigits: 3 }) : typeof x === 'object' && x !== null ? JSON.stringify(x) : String(x);
+  if (Array.isArray(v)) { for (const x of v) wrap.append(el('span', { class: 'chip' }, fmt(x))); if (!v.length) wrap.append(el('span', { class: 'muted' }, '空')); }
+  else for (const [kk, x] of Object.entries(v)) wrap.append(el('span', { class: 'chip' }, el('b', {}, kk + ': '), fmt(x)));
+  return wrap;
 }
 
 async function openPeek(path) {

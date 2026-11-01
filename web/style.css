@@ -367,3 +367,26 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
   .login-box { box-shadow: none; background: transparent; }
 }
 @media (hover: none) { .card:hover, a.card-box:hover { transform: none; } }
+
+/* ---- journal entries & structured properties ----------------------------------- */
+.entry { padding: 14px 0 6px; border-top: 1px solid var(--border-2); }
+.entry:first-child { border-top: none; padding-top: 0; }
+.entry-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; flex-wrap: wrap; }
+.entry-head .time { font-family: var(--mono); font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.entry-head .etitle { font-weight: 600; font-size: 15.5px; line-height: 1.35; flex: 1; min-width: 0; }
+.entry-head .etitle:empty { display: none; }
+.entry p { margin: 2px 0 8px; }
+.journal-day .entry { padding: 10px 0 2px; }
+.journal-day .entry-head .etitle { font-size: 14px; }
+.journal-body { font-size: 15px; }
+.prop-chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
+.prop-chips .chip { font-family: var(--mono); font-weight: 400; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.prop-chips .chip b { font-family: var(--font); font-weight: 500; margin-right: 2px; }
+@media (max-width: 760px) {
+  .props { grid-template-columns: 1fr; gap: 0; }
+  .props .k { padding: 10px 0 0; font-size: 12px; }
+  .props .v { padding: 0 0 4px; min-height: 26px; }
+  .props .v input { width: 100%; min-width: 0; }
+  .props .v input[type=date] { width: auto; }
+  .entry-head .etitle { font-size: 16px; }
+}
