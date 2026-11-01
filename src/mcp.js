@@ -44,7 +44,7 @@ export function buildMcpServer({ vault, auth, principal }) {
       date: z.string().optional().describe('YYYY-MM-DD for journal entries that belong to another day')
     }
   }, guarded('write', (a) => a.notebook || '', function capture_note(args) {
-    return capture(vault, router, { ...args, source: args.source || principal.name });
+    return capture(vault, router, { ...args, source: args.source || principal.name }, { auth, log: (e) => auth.audit({ name: 'ai' }, e.event, e.notebook || '', e) });
   }));
 
   server.registerTool('notebook_list_notebooks', {
@@ -191,6 +191,22 @@ export function buildMcpServer({ vault, auth, principal }) {
     }
   }, guarded('write', (a) => a.path, function update_note({ path, title, body, append, status, tags, properties }) {
     return vault.updateNote(path, { title, body, append, properties: { ...(properties || {}), status, tags } });
+  }));
+
+  server.registerTool('notebook_update_entry', {
+    title: 'Edit / delete one journal entry',
+    description: 'Journals (健康, 财务 …) keep one page per day with timestamped entries. Correct or delete ONE entry instead of rewriting the page: locate it by time (HH:MM, from the capture result\'s `entry` or the page body) and, if needed, a `match` substring. Set remove:true to delete it.',
+    inputSchema: {
+      path: z.string().describe('Day page path, e.g. 财务/2026-11-01.md'),
+      time: z.string().optional().describe('HH:MM of the entry'),
+      match: z.string().optional().describe('Substring of the entry title/text to disambiguate'),
+      title: z.string().optional(),
+      text: z.string().optional().describe('New body for the entry (Markdown)'),
+      properties: z.record(z.any()).optional().describe('Inline fields to set, e.g. {amount: 66.7}; null removes'),
+      remove: z.boolean().optional()
+    }
+  }, guarded('write', (a) => a.path, function update_entry({ path, ...rest }) {
+    return vault.updateJournalEntry(path, rest);
   }));
 
   server.registerTool('notebook_move_card', {

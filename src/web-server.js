@@ -6,14 +6,17 @@ import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
 import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
-import { Router, capture, digest } from './notebooks.js';
+import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
+import { aiSettings, testConnection, AI_MODELS } from './enrich.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp({ vault, auth, backup }) {
   const app = express();
   const router = new Router(vault);
+  const aiLog = (e) => auth.audit({ name: 'ai' }, e.event, e.notebook || '', e);
+  const captureOpts = { auth, log: aiLog };
   app.use(express.json({ limit: '5mb' }));
 
   // ---- identify the caller -------------------------------------------
@@ -54,7 +57,7 @@ export function createApp({ vault, auth, backup }) {
 
   // ---- one-URL capture: for agents that can only open a link (browsing tools, bookmarks) ----
   // GET /api/quick/<token>?text=...&title=&tags=a,b&notebook=   (POST with a JSON or form body works too)
-  app.all('/api/quick/:token', express.urlencoded({ extended: false }), (req, res, next) => {
+  app.all('/api/quick/:token', express.urlencoded({ extended: false }), async (req, res, next) => {
     try {
       const principal = auth.authenticate(req.params.token);
       if (!principal) { auth.audit({ name: 'anonymous' }, 'quick:denied', 'url-token', { ip: req.socket.remoteAddress }); return res.status(401).json({ error: 'invalid token' }); }
@@ -63,7 +66,7 @@ export function createApp({ vault, auth, backup }) {
       if (!text) return res.status(400).json({ error: 'text is required: /api/quick/<token>?text=...' });
       auth.require(principal, 'write', q.notebook || '');
       const tags = Array.isArray(q.tags) ? q.tags : String(q.tags || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean);
-      const r = capture(vault, router, { text, title: q.title || undefined, notebook: q.notebook || undefined, tags, source: q.source || principal.name });
+      const r = await capture(vault, router, { text, title: q.title || undefined, notebook: q.notebook || undefined, tags, source: q.source || principal.name }, captureOpts);
       auth.audit(principal, 'capture', r.path, { via: 'quick', mode: r.mode, notebook: r.notebook.folder });
       if ((req.headers.accept || '').includes('text/html')) {
         res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已记入</title><body style="font-family:-apple-system,sans-serif;padding:40px 24px;color:#1d1d1f"><h2 style="margin:0 0 8px">${r.notebook.icon} 已记入「${esc(r.notebook.title)}」</h2><p style="color:#6e6e73">${esc(r.title)}</p><p style="color:#86868b;font-size:13px">${esc(r.hint)}</p></body>`);
@@ -144,10 +147,39 @@ export function createApp({ vault, auth, backup }) {
     const ok = new Set(nodes.map((n) => n.path));
     res.json({ ...g, nodes, edges: g.edges.filter((e) => ok.has(e.source) && ok.has(e.target)) });
   });
-  api.post('/capture', guard('write', (r) => r.body.notebook || ''), (req, res) => {
-    const r = capture(vault, router, { ...req.body, source: req.body.source || req.principal.name });
-    auth.audit(req.principal, 'capture', r.path, { via: 'web', mode: r.mode, notebook: r.notebook.folder });
-    res.status(201).json(r);
+  api.post('/capture', guard('write', (r) => r.body.notebook || ''), async (req, res, next) => {
+    try {
+      const r = await capture(vault, router, { ...req.body, source: req.body.source || req.principal.name }, captureOpts);
+      auth.audit(req.principal, 'capture', r.path, { via: 'web', mode: r.mode, notebook: r.notebook.folder });
+      res.status(201).json(r);
+    } catch (err) { next(err); }
+  });
+  // ---- AI (optional) ------------------------------------------------------
+  api.get('/ai', guard('admin'), (req, res) => res.json({ ...aiSettings(auth), models: AI_MODELS }));
+  api.post('/ai', guard('admin'), (req, res) => {
+    const { apiKey, model, enabled, mode, clearKey } = req.body || {};
+    auth.update((cfg) => {
+      cfg.ai = cfg.ai || {};
+      if (clearKey) { delete cfg.ai.apiKey; cfg.ai.enabled = false; }
+      if (apiKey) cfg.ai.apiKey = String(apiKey).trim();
+      if (model) cfg.ai.model = model;
+      if (mode) cfg.ai.mode = mode;
+      if (enabled !== undefined) cfg.ai.enabled = !!enabled;
+    });
+    auth.audit(req.principal, 'update_ai', '', { model, enabled, mode, key: apiKey ? 'set' : clearKey ? 'cleared' : undefined });
+    res.json({ ...aiSettings(auth), models: AI_MODELS });
+  });
+  api.post('/ai/test', guard('admin'), async (req, res) => {
+    try { res.json(await testConnection(auth)); }
+    catch (err) { res.status(502).json({ ok: false, error: err.message, status: err.status }); }
+  });
+  api.post('/ai/organize', guard('write', () => vault.inboxFolder() || ''), async (req, res, next) => {
+    try {
+      if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里填 API key' });
+      const r = await organizeInbox(vault, router, auth, { paths: req.body?.paths, log: aiLog });
+      auth.audit(req.principal, 'ai_organize', vault.inboxFolder(), { via: 'web', moved: r.done.length, left: r.left.length });
+      res.json(r);
+    } catch (err) { next(err); }
   });
   api.post('/move', guard('write', (r) => r.body.folder || ''), (req, res) => {
     const { path: p, folder, learn } = req.body;
@@ -189,6 +221,12 @@ export function createApp({ vault, auth, backup }) {
     const note = vault.updateNote(notePath(req), { title, body, append, properties });
     auth.audit(req.principal, 'update_note', note.path, { via: 'web', fields: Object.keys(req.body) });
     res.json(note);
+  });
+  // one entry inside a journal day page: PATCH to edit, with remove:true to delete
+  api.patch('/entries/*', guard('write', notePath), (req, res) => {
+    const r = vault.updateJournalEntry(notePath(req), req.body || {});
+    auth.audit(req.principal, req.body?.remove ? 'delete_entry' : 'update_entry', notePath(req), { via: 'web', time: req.body?.time, match: req.body?.match });
+    res.json(r);
   });
   api.delete('/notes/*', guard('write', notePath), (req, res) => {
     const r = vault.deleteNote(notePath(req));
@@ -295,6 +333,11 @@ function openapi(base, vault) {
       '/api/today': { get: { operationId: 'today', summary: "Everything recorded on a day, grouped by notebook", parameters: [{ name: 'date', in: 'query', schema: { type: 'string', format: 'date' } }], responses: { 200: { description: 'groups[]' } } } },
       '/api/search': { get: { operationId: 'search', summary: 'Full-text search', parameters: [{ name: 'q', in: 'query', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'hits[]' } } } },
       '/api/notebooks': { get: { operationId: 'listNotebooks', summary: 'Notebooks with kind, keywords, description', responses: { 200: { description: 'notebooks[]' } } } },
+      '/api/notes/{path}': {
+        get: { operationId: 'readNote', summary: 'Read one note (properties, Markdown body, links, backlinks)', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' }, description: 'Vault-relative path ending in .md, e.g. 财务/2026-11-01.md' }], responses: { 200: { description: 'note' } } },
+        patch: { operationId: 'updateNote', summary: 'Edit a note: replace or append body, rename, change properties (null removes one)', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string', description: 'Replace the whole Markdown body' }, append: { type: 'string', description: 'Append Markdown to the end' }, tags: { type: 'array', items: { type: 'string' } }, status: { type: 'string', description: 'Board column' } }, additionalProperties: true } } } }, responses: { 200: { description: 'updated note' } } },
+        delete: { operationId: 'deleteNote', summary: 'Move a note to the trash', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'deleted' } } } },
+      '/api/entries/{path}': { patch: { operationId: 'updateEntry', summary: 'Edit or delete ONE timestamped entry of a journal day page (e.g. correct this morning\'s 财务 entry)', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' }, description: 'The day page, e.g. 财务/2026-11-01.md' }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { time: { type: 'string', description: 'HH:MM of the entry (from the page body or the capture result\'s entry)' }, match: { type: 'string', description: 'Substring of the entry title/text when several share a time' }, title: { type: 'string' }, text: { type: 'string', description: 'New body for that entry' }, properties: { type: 'object', additionalProperties: true, description: 'Inline fields to set, e.g. {amount: 66.7}; null removes one' }, remove: { type: 'boolean', description: 'true deletes the entry' } } } } } }, responses: { 200: { description: 'updated day page' } } } },
       '/api/metrics/{notebook}': { get: { operationId: 'metrics', summary: 'Numeric series of a notebook (amount, weight…)', parameters: [{ name: 'notebook', in: 'path', required: true, schema: { type: 'string' } }, { name: 'from', in: 'query', schema: { type: 'string' } }, { name: 'to', in: 'query', schema: { type: 'string' } }], responses: { 200: { description: 'keys[] + series' } } } }
     }
   };

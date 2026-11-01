@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
-import { fieldsLine } from './metrics.js';
+import { fieldsLine, ENTRY_HEADING_RE, journalEntries } from './metrics.js';
 
 export const DEFAULT_COLUMNS = ['待处理', '进行中', '已完成'];
 const SUMMARY_SYSTEM_KEYS = new Set(['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries']);
@@ -359,6 +359,44 @@ export class Vault {
     const sources = Array.from(new Set([...(Array.isArray(p.sources) ? p.sources : p.source ? [p.source] : []), ...(source ? [source] : [])]));
     this.updateNote(rel, { append: block, properties: { tags: mergedTags, sources, source: sources.length === 1 ? sources[0] : 'multiple', entries: (p.entries || 0) + 1, ...pageProps } });
     return { ...this.getNote(rel), entry: heading };
+  }
+
+  /**
+   * Edit or delete one timestamped entry of a journal day page. Locate it by `time` ("15:59") and, when
+   * several entries share a time, by `match` (a substring of its title or text). Pass `remove: true`
+   * to delete it; otherwise `text` replaces the body, `title` the headline, `properties` the inline fields.
+   */
+  updateJournalEntry(rel, { time, match, title, text, properties, remove = false } = {}) {
+    const note = this.getNote(rel);
+    const lines = note.body.split('\n');
+    const heads = [];
+    lines.forEach((l, i) => { const m = l.match(ENTRY_HEADING_RE); if (m) heads.push({ i, time: m[1], title: (m[2] || '').trim(), source: (m[3] || '').trim() }); });
+    if (!heads.length) throw new VaultError('This note has no timestamped entries', 400);
+    let hits = heads.filter((h) => !time || h.time === time);
+    if (match) hits = hits.filter((h, idx) => { const end = heads[heads.indexOf(h) + 1]?.i ?? lines.length; return `${h.title}\n${lines.slice(h.i + 1, end).join('\n')}`.toLowerCase().includes(String(match).toLowerCase()); });
+    if (!hits.length) throw new VaultError(`No entry matches time=${time || '*'}${match ? ` match="${match}"` : ''}. Entries: ${heads.map((h) => `${h.time} ${h.title}`).join(' | ')}`, 404);
+    if (hits.length > 1) throw new VaultError(`${hits.length} entries match; add "match" to pick one: ${hits.map((h) => `${h.time} ${h.title}`).join(' | ')}`, 409);
+    const h = hits[0];
+    const idx = heads.indexOf(h);
+    const end = heads[idx + 1]?.i ?? lines.length;
+    let newBlock = [];
+    if (!remove) {
+      const current = journalEntries(lines.slice(h.i, end).join('\n'))[0];
+      const newTitle = title !== undefined ? title : h.title;
+      const heading = `## ${h.time}${newTitle ? ' · ' + newTitle : ''}${h.source ? `  <small>${h.source}</small>` : ''}`;
+      // keep the old inline fields unless new properties are given; the field line is the last line of the entry
+      const oldFields = current.fields;
+      const mergedProps = properties ? { ...oldFields, ...properties } : oldFields;
+      for (const k of Object.keys(mergedProps)) if (mergedProps[k] === null) delete mergedProps[k];
+      let bodyText = text !== undefined ? String(text).trim() : current.text.replace(/\n*\[[^\]]*::[^\]]*\](?:\s*\[[^\]]*::[^\]]*\])*\s*$/, '').trim();
+      const fields = fieldsLine(mergedProps);
+      newBlock = [heading, '', bodyText + (fields ? '\n\n' + fields : ''), ''];
+    }
+    const out = [...lines.slice(0, h.i), ...newBlock, ...lines.slice(end)];
+    const p = note.properties;
+    const entries = Math.max(0, (p.entries || heads.length) + (remove ? -1 : 0));
+    if (remove && heads.length === 1) return this.deleteNote(rel);
+    return this.updateNote(rel, { body: out.join('\n').replace(/\n{3,}/g, '\n\n'), properties: { entries } });
   }
 
   // ---- links -------------------------------------------------------------

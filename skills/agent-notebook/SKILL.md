@@ -34,6 +34,13 @@ Write `[[页面标题]]` anywhere in text to link to another note; the notebook 
 - `notebook_get_board { folder, date? }` for one board; `notebook_search { query }` for anything.
 - `notebook_read_note { path }` returns the note with its `links` and `backlinks`.
 
+## Correcting what was recorded
+
+The capture result returns `path` and, for journals, `entry` (its `HH:MM · title` heading). When the owner says a record was wrong, fix that record instead of appending a "更正" entry:
+- `notebook_update_entry { path, time, match?, text?, title?, properties?, remove? }` — one timestamped entry of a day page (健康, 财务 …). `properties: { amount: 66.7 }` rewrites its inline fields; `remove: true` deletes it.
+- `notebook_update_note { path, body | append | title | properties }` — a page or card; `notebook_delete_note` moves a note to the trash.
+Read first with `notebook_read_note` when unsure what is there.
+
 ## Housekeeping tools (use when asked)
 
 - `notebook_move_note { path, notebook }` — the owner says "this belongs in 阅读": move it; the notebook learns from the move.

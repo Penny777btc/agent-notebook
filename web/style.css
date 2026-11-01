@@ -390,3 +390,8 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
   .props .v input[type=date] { width: auto; }
   .entry-head .etitle { font-size: 16px; }
 }
+
+/* collapsed journal entries in lists */
+.ebody.clamp { max-height: 4.9em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+.more-btn { border: none; background: transparent; color: var(--accent-text); font-size: 12.5px; padding: 2px 0 6px; font-weight: 500; }
+.more-btn:hover { text-decoration: underline; }

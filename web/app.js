@@ -97,6 +97,7 @@ function renderMd(md, { journal = false } = {}) {
 /** Journal pages: each "## HH:MM · title <small>source</small>" plus what follows becomes a readable entry block. */
 function journalEntriesHtml(doc) {
   const body = doc.body;
+  let ebody = null;
   const nodes = [...body.childNodes];
   const isHead = (n) => n.nodeType === 1 && n.tagName === 'H2' && /^\s*\d{2}:\d{2}/.test(n.textContent);
   if (!nodes.some(isHead)) return;
@@ -112,9 +113,10 @@ function journalEntriesHtml(doc) {
       const title = doc.createElement('span'); title.className = 'etitle'; title.textContent = (m && m[2] ? m[2] : '').trim();
       head.append(time, title);
       if (source) { const chip = doc.createElement('span'); chip.className = 'chip source'; chip.textContent = source; head.append(chip); }
-      section.append(head);
+      ebody = doc.createElement('div'); ebody.className = 'ebody';
+      section.append(head, ebody);
       body.append(section);
-    } else if (section) section.append(n);
+    } else if (section) ebody.append(n);
     else body.append(n);
   }
 }
@@ -133,6 +135,7 @@ const state = { notebooks: [], tree: [], linkIndex: {}, route: null, routeKey: '
 
 async function loadSidebar() {
   [state.notebooks, state.tree, state.linkIndex] = await Promise.all([get('/api/notebooks'), get('/api/tree'), get('/api/links/index')]);
+  get('/api/ai').then((a) => { state.ai = a; }).catch(() => { state.ai = null; });
   renderSidebar();
 }
 const nbOf = (folder) => state.notebooks.find((n) => n.folder === folder);
@@ -226,6 +229,18 @@ function captureBox({ notebook } = {}) {
   return el('div', { class: 'capture' }, ta, el('div', { class: 'row' }, sel, status, el('div', { style: 'flex:1' }), el('span', { class: 'muted', style: 'font-size:12px' }, '⌘↵'), el('button', { class: 'btn small primary', onclick: send }, '记录')));
 }
 
+function aiOrganizeButton() {
+  if (!state.ai?.enabled) return el('a', { class: 'btn small', href: '#/settings', title: '在设置里填 API key 后，可一键让 AI 整理收件箱' }, '✨ 开启 AI 整理');
+  return el('button', { class: 'btn small primary', onclick: async (e) => {
+    const b = e.currentTarget; b.disabled = true; b.textContent = '✨ 整理中…';
+    try {
+      const r = await api('POST', '/api/ai/organize', {});
+      toast(r.done.length ? `AI 归入了 ${r.done.length} 条${r.left.length ? `，${r.left.length} 条还拿不准` : ''}` : (r.left.length ? `AI 对这 ${r.left.length} 条都不确定，留在收件箱` : '收件箱是空的'));
+      await loadSidebar(); route();
+    } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = '✨ AI 整理'; }
+  } }, '✨ AI 整理');
+}
+
 function assignChips(note, { onDone } = {}) {
   const wrap = el('div', { class: 'assign' }, el('span', { class: 'muted', style: 'font-size:12px' }, '归入：'));
   const move = async (folder) => {
@@ -257,7 +272,7 @@ async function viewHome(main) {
   const inbox = state.notebooks.find((n) => n.inbox);
   if (inbox && inbox.count) {
     const items = await get(`/api/notes?folder=${encodeURIComponent(inbox.folder)}&recursive=false&limit=50`);
-    page.append(el('div', { class: 'feed-head' }, el('span', {}, inbox.icon), el('a', { href: nbHref(inbox.folder) }, '收件箱'), el('span', { class: 'n' }, `${items.length} 条待归类`)));
+    page.append(el('div', { class: 'feed-head' }, el('span', {}, inbox.icon), el('a', { href: nbHref(inbox.folder) }, '收件箱'), el('span', { class: 'n' }, `${items.length} 条待归类`), el('div', { class: 'spacer' }), aiOrganizeButton()));
     for (const n of items) {
       page.append(el('div', { class: 'inbox-item' },
         el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtClock(n.created)),
@@ -290,12 +305,25 @@ async function viewHome(main) {
   main.append(topbar([{ label: '今天' }]), page);
 }
 
+/** Journal cards in lists: clamp long entry bodies to a few lines with a 展开 toggle. */
+function clampEntries(card) {
+  requestAnimationFrame(() => {
+    for (const eb of card.querySelectorAll('.ebody')) {
+      eb.classList.add('clamp');
+      if (eb.scrollHeight <= eb.clientHeight + 6) { eb.classList.remove('clamp'); continue; }
+      const btn = el('button', { class: 'more-btn', onclick: (e) => { e.stopPropagation(); const open = eb.classList.toggle('clamp'); btn.textContent = open ? '展开' : '收起'; } }, '展开');
+      eb.after(btn);
+    }
+  });
+  return card;
+}
+
 function feedGroup(g) {
   const nb = g.notebook;
   const box = el('div', { class: 'feed-group' });
   box.append(el('div', { class: 'feed-head' }, el('span', {}, nb.icon), el('a', { href: nbHref(nb.folder) }, nb.title), el('span', { class: 'n' }, nb.kind === 'journal' ? `${g.items.reduce((n, i) => n + (i.entries || 1), 0)} 条` : `${g.items.length} 条`)));
   for (const it of g.items) {
-    if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) })));
+    if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
     else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
       el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 120))),
       el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 2).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
@@ -368,6 +396,7 @@ async function viewNotebook(main, folder) {
     el('input', { type: 'date', value: dateFilter, onchange: (e) => setDate(e.target.value) }),
     dateFilter && el('button', { class: 'btn small', onclick: () => setDate('') }, '✕'),
     el('div', { class: 'spacer' }),
+    nb.inbox && aiOrganizeButton(),
     el('button', { class: 'btn small', onclick: () => notebookDialog({ folder, meta: nb }) }, '⚙ 设置'),
     nb.kind !== 'journal' && el('button', { class: 'btn small', onclick: () => newNoteDialog({ folder, columns: nb.columns || undefined }) }, nb.kind === 'board' ? '＋ 新建卡片' : '＋ 新建页面'));
   page.append(tb);
@@ -397,7 +426,7 @@ function timeline(nb) {
   for (const [d, items] of [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0]))) {
     box.append(el('div', { class: 'timeline-date' }, d === today() ? `今天 · ${d}` : d));
     for (const it of items) {
-      if (nb.kind === 'journal') box.append(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) })));
+      if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
       else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
         el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, it.excerpt.slice(0, 140))),
         el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 3).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
@@ -845,6 +874,26 @@ async function viewSettings(main) {
     status.principal?.kind === 'token' && el('label', {}, '本设备'), status.principal?.kind === 'token' && el('div', { class: 'row' }, el('span', { class: 'muted', style: 'font-size:13px' }, `以设备令牌「${status.principal.name}」登录`), el('button', { class: 'btn small', onclick: logout }, '退出登录'))),
     steps, accMsg));
 
+  // AI classification
+  const ai = await get('/api/ai');
+  state.ai = ai;
+  page.append(el('h2', {}, '智能归类（AI）'), el('p', {}, '不填也能用：系统靠关键词、学到的规则和「与各笔记本已有内容的相似度」归类。填上 Anthropic API key 后，拿不准的记录会交给 Claude 判断归属，并为没有标题的长记录提炼一句话标题、补标签和数字属性；收件箱也可一键「AI 整理」。key 保存在本机 vault/.notebook/config.json（不进 git）。'));
+  const keyIn = el('input', { type: 'password', placeholder: ai.configured ? `已保存 ${ai.keyPrefix}，输入新 key 可替换` : 'sk-ant-…', autocomplete: 'off' });
+  const modelSel = el('select', {}, ai.models.map((m) => el('option', { value: m.id, selected: m.id === ai.model }, m.label)));
+  const modeSel = el('select', {}, el('option', { value: 'unsure', selected: ai.mode !== 'always' }, '只在规则拿不准时问 AI（省钱）'), el('option', { value: 'always', selected: ai.mode === 'always' }, '每条都让 AI 复核（更准）'));
+  const enabledChk = el('input', { type: 'checkbox', checked: !!ai.enabled, disabled: !ai.configured });
+  const aiOut = el('div', { class: 'muted', style: 'font-size:13px;margin-top:10px' });
+  const saveAi = async (body) => { try { const r = await api('POST', '/api/ai', body); toast('已保存'); state.ai = r; route(); } catch (err) { toast(err.message, true); } };
+  page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
+    el('label', {}, 'API key'), el('div', { class: 'row' }, keyIn, el('button', { class: 'btn primary', onclick: () => { if (!keyIn.value.trim()) { toast('先粘贴 key', true); return; } saveAi({ apiKey: keyIn.value.trim(), enabled: true }); } }, ai.configured ? '替换' : '保存并开启'), ai.configured && el('button', { class: 'btn danger', onclick: () => { if (confirm('删除已保存的 API key 并关闭 AI？')) saveAi({ clearKey: true }); } }, '删除')),
+    el('label', {}, '模型'), el('div', { class: 'row' }, modelSel, el('span', { class: 'muted', style: 'font-size:12px' }, '一条记录约 1k token，Opus 约 ¥0.03/条，Haiku 约 ¥0.001/条')),
+    el('label', {}, '何时使用'), modeSel,
+    el('label', {}, '开关'), el('div', { class: 'row' }, el('label', {}, enabledChk, ai.configured ? ' 启用 AI 归类' : ' 启用 AI 归类（先保存 key）')),
+    el('div', { class: 'actions' },
+      el('button', { class: 'btn', onclick: () => saveAi({ model: modelSel.value, mode: modeSel.value, enabled: enabledChk.checked }) }, '保存设置'),
+      ai.configured && el('button', { class: 'btn', onclick: async (e) => { e.currentTarget.disabled = true; aiOut.textContent = '测试中…'; try { const r = await api('POST', '/api/ai/test', {}); aiOut.innerHTML = ''; aiOut.append(el('span', { class: 'ok' }, `✓ 连接正常 · ${r.model} · ${r.ms} ms`)); } catch (err) { aiOut.innerHTML = ''; aiOut.append(el('span', { class: 'err' }, '连接失败：' + err.message)); } e.currentTarget.disabled = false; } }, '测试连接'))),
+    aiOut));
+
   page.append(el('h2', {}, 'Agent 访问令牌'), el('p', {}, el('a', { href: '#/agents', style: 'color:var(--accent)' }, '接入 Agent 页'), ' 可以自动检测并一键接入本机 agent。这里管理已有令牌：read 只能读取，write 可以记录 / 修改，admin 可以管理令牌和备份。'));
   const tokBox = el('div', { class: 'card-box' });
   if (tokens.length) {
@@ -946,6 +995,13 @@ function skillText(r) {
 - 不要自己选笔记本：系统按关键词和我教过的规则自动归类，拿不准会进收件箱由我分配。只有我明确说「记到 X」时才传 notebook。现有笔记本：
   - ${nbs}
 - 想引用已有笔记，在 text 里写 [[笔记标题]]。返回结果里的 related 是相似的已有笔记，明显同一主题就别重复新建。
+
+## 改和删（不是只能新增）
+- 记录接口会返回 path（笔记路径）和 entry（日志条目的时间标题）。要更正一条已有记录时，改它，不要再新增一条"更正"。
+- 改整页：PATCH ${r.base}/api/notes/<path> ，JSON { "body": 整段替换, "append": 末尾追加, "title", "tags", 任意属性 }（MCP：notebook_update_note）。
+- 改日志里的某一条（健康、财务这类一天一页）：PATCH ${r.base}/api/entries/<path> ，JSON { "time": "15:59", "match": "可选的标题/正文片段", "text": 新正文, "title": 新标题, "properties": {"amount": 66.7}, "remove": true 表示删除 }（MCP：notebook_update_entry）。
+- 删整条笔记：DELETE ${r.base}/api/notes/<path>（MCP：notebook_delete_note），会进回收站。
+- 先读再改：GET ${r.base}/api/notes/<path>（MCP：notebook_read_note）。path 里的中文要 URL 编码。
 
 ## 回看
 - 今天记了什么：GET ${r.base}/api/today （或 MCP 工具 notebook_today）

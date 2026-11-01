@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { localDate } from './vault.js';
 import { extractFields } from './metrics.js';
+import { NotebookProfiles, extractNumbers } from './content.js';
+import { enrich as aiEnrich, aiSettings } from './enrich.js';
 
 const INBOX_FOLDER = '收件箱';
 // whole CJK phrases of 2-6 chars (bounded by non-CJK); longer runs are sentences, not keywords
@@ -15,6 +17,7 @@ export class Router {
   constructor(vault) {
     this.vault = vault;
     this.rulesPath = path.join(vault.root, '.notebook', 'rules.json');
+    this.profiles = new NotebookProfiles(vault);
   }
 
   rules() {
@@ -70,10 +73,18 @@ export class Router {
     const lowTags = tags.map((t) => String(t).toLowerCase());
     const r = this.rules();
     const candidates = [];
+    // content similarity to what already lives in each notebook (tf-idf over the vault's own notes)
+    let sims = new Map();
+    try { sims = new Map(this.profiles.similar({ title, text }).map((x) => [x.folder, x])); } catch { /* profiles are an optimisation only */ }
     for (const nb of this.vault.listNotebooks()) {
       if (nb.inbox) continue;
       let score = 0;
       const reasons = [];
+      const sim = sims.get(nb.folder);
+      if (sim && sim.docs >= 2 && sim.similarity >= 0.12) {
+        const pts = sim.similarity >= 0.35 ? 4 : sim.similarity >= 0.22 ? 3 : 2;
+        score += pts; reasons.push(`内容与「${nb.title}」里的笔记相近（${Math.round(sim.similarity * 100)}%）`);
+      }
       for (const kw of nb.keywords) {
         if (kw && hay.includes(String(kw).toLowerCase())) { score += 2; reasons.push(`关键词「${kw}」`); }
       }
@@ -191,12 +202,14 @@ function hashtags(text) {
  * The one call agents make. Decides where the text belongs, files it in the notebook's own
  * shape (journal entry / card / page) and reports related notes the agent may want to link.
  */
-export function capture(vault, router, { text, title, notebook, tags = [], source, properties = {}, date } = {}) {
+export async function capture(vault, router, { text, title, notebook, tags = [], source, properties = {}, date } = {}, { auth, log } = {}) {
   if (!text && !title) throw Object.assign(new Error('text is required'), { status: 400 });
   text = String(text || '');
   // `[amount:: 35]` / `weight:: 71.5` typed inside the text count as properties too (Obsidian Dataview syntax)
   const inText = extractFields(text);
-  properties = { ...inText, ...(properties || {}) };
+  // numbers stated in prose ("花了 42 元", "体重 71.5kg") become properties unless the agent already set that key
+  const numbers = extractNumbers(`${title || ''}\n${text}`);
+  properties = { ...numbers, ...inText, ...(properties || {}) };
   const titleGiven = !!title;
   title = title || deriveTitle(text);
   tags = Array.from(new Set([...(tags || []), ...hashtags(text)]));
@@ -204,6 +217,7 @@ export function capture(vault, router, { text, title, notebook, tags = [], sourc
   let folder;
   let mode;
   let classification = { decision: null, candidates: [] };
+  let ai = null;
   if (notebook) {
     if (!vault.isNotebook(notebook)) throw Object.assign(new Error(`Notebook not found: ${notebook}. Call notebook_list_notebooks to see what exists.`), { status: 404 });
     folder = notebook;
@@ -212,16 +226,31 @@ export function capture(vault, router, { text, title, notebook, tags = [], sourc
   } else {
     classification = router.classify({ text, title, tags, source });
     if (classification.decision) { folder = classification.decision; mode = 'auto'; }
-    else { folder = ensureInbox(vault); mode = 'inbox'; }
   }
+  // AI layer (optional): decides when the router could not, and writes a headline / tags / numbers
+  const aiOn = auth && aiSettings(auth).enabled;
+  const needsTitle = !titleGiven && (text.length > 40 || text.includes('\n')); // Chinese is dense: 40 chars is already a paragraph
+  if (aiOn && (!folder || needsTitle || (aiSettings(auth).mode === 'always' && mode !== 'explicit'))) {
+    ai = await aiEnrich(auth, { text, title: titleGiven ? title : '', tags, notebooks: vault.listNotebooks() }, { log });
+    if (ai) {
+      if (!folder && ai.notebook && ai.confidence >= 0.6) { folder = ai.notebook; mode = 'ai'; }
+      else if (folder && mode === 'auto' && aiSettings(auth).mode === 'always' && ai.notebook && ai.confidence >= 0.8 && ai.notebook !== folder) { folder = ai.notebook; mode = 'ai'; }
+      if (!titleGiven && ai.title) title = ai.title;
+      if (!tags.length && ai.tags.length) tags = ai.tags;
+      properties = { ...ai.properties, ...properties };
+      if (!folder && ai.notebook) classification.candidates = [{ folder: ai.notebook, title: vault.getNotebookMeta(ai.notebook).title, icon: vault.getNotebookMeta(ai.notebook).icon, kind: vault.getNotebookMeta(ai.notebook).kind, score: Math.round(ai.confidence * 10), reasons: [`AI 判断（${Math.round(ai.confidence * 100)}%）`] }, ...classification.candidates.filter((c) => c.folder !== ai.notebook)].slice(0, 3);
+    }
+  }
+  if (!folder) { folder = ensureInbox(vault); mode = 'inbox'; }
 
   const meta = vault.getNotebookMeta(folder);
   const common = { source, tags, captured: mode, ...(mode === 'inbox' && classification.candidates.length ? { suggested: classification.candidates.map((c) => c.folder) } : {}) };
+  const titleForEntry = titleGiven || (ai && ai.title) ? title : undefined;
   let note;
   let entry = null;
   if (meta.kind === 'journal') {
     const entryProps = Object.fromEntries(Object.entries(properties).filter(([k]) => !(k in inText))); // fields already in the text stay where they are
-    const r = vault.appendJournal(folder, { title: titleGiven ? title : undefined, text, source, tags, properties: entryProps, date });
+    const r = vault.appendJournal(folder, { title: titleForEntry, text, source, tags, properties: entryProps, date });
     note = r; entry = r.entry;
   } else {
     note = vault.createNote({ folder, title, body: text, properties: { ...properties, ...common } });
@@ -240,9 +269,11 @@ export function capture(vault, router, { text, title, notebook, tags = [], sourc
     candidates: classification.candidates,
     links,
     related,
+    ai: ai ? { notebook: ai.notebook, confidence: ai.confidence, title: ai.title, summary: ai.summary, model: ai.model } : null,
     hint: mode === 'inbox'
       ? '归类拿不准，已放入收件箱。如果你知道它属于哪个笔记本，下次直接传 notebook 参数。'
-      : mode === 'auto' ? `已自动归入「${meta.title}」（${classification.candidates[0]?.reasons.join('，') || ''}）。` : `已记入「${meta.title}」。`
+      : mode === 'auto' ? `已自动归入「${meta.title}」（${classification.candidates[0]?.reasons.join('，') || ''}）。`
+      : mode === 'ai' ? `AI 判断归入「${meta.title}」（${Math.round((ai?.confidence || 0) * 100)}%）。` : `已记入「${meta.title}」。`
   };
 }
 
@@ -260,4 +291,33 @@ export function digest(vault, date = localDate(new Date())) {
   const sources = new Set();
   for (const g of groups) for (const i of g.items) if (i.source) sources.add(i.source);
   return { date, groups, total: groups.reduce((n, g) => n + g.items.length, 0), sources: [...sources] };
+}
+
+/** 收件箱 → AI 整理：file, retitle and tag every inbox note the AI is confident about. */
+export async function organizeInbox(vault, router, auth, { paths, log } = {}) {
+  const inbox = vault.inboxFolder();
+  if (!inbox) return { done: [], left: [] };
+  const notes = vault.listNotes({ folder: inbox, recursive: false, limit: 200 }).filter((n) => !paths || paths.includes(n.path));
+  const notebooks = vault.listNotebooks();
+  const done = [];
+  const left = [];
+  for (const n of notes) {
+    const note = vault.getNote(n.path);
+    const ai = await aiEnrich(auth, { text: note.body || note.title, title: note.title, tags: note.properties.tags || [], notebooks }, { log });
+    if (!ai || !ai.notebook || ai.confidence < 0.6) { left.push({ path: n.path, title: n.title, reason: ai ? `不确定（${Math.round(ai.confidence * 100)}%）` : 'AI 不可用' }); continue; }
+    const meta = vault.getNotebookMeta(ai.notebook);
+    const props = { ...(ai.title && ai.title !== note.title ? { title: ai.title } : {}), ...(!(note.properties.tags || []).length && ai.tags.length ? { tags: ai.tags } : {}), ...ai.properties, captured: 'ai', suggested: null };
+    let moved;
+    if (meta.kind === 'journal') {
+      const r = vault.appendJournal(ai.notebook, { title: ai.title || note.title, text: note.body, source: note.properties.source, tags: ai.tags, properties: ai.properties, date: note.properties.date });
+      vault.deleteNote(n.path);
+      moved = r;
+    } else {
+      vault.updateNote(n.path, { properties: props });
+      moved = vault.moveNote(n.path, ai.notebook);
+    }
+    router.learn({ tags: ai.tags, source: note.properties.source }, ai.notebook, { strong: false });
+    done.push({ from: n.path, to: moved.path, notebook: { folder: ai.notebook, title: meta.title, icon: meta.icon }, title: ai.title || note.title, confidence: ai.confidence });
+  }
+  return { done, left };
 }

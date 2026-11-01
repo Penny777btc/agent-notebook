@@ -18,6 +18,8 @@ A **local-first notebook shared by you and all your AI agents**.
 - **Links**: write `[[Page title]]` anywhere; it resolves by title across notebooks, renders as a link, and the target shows **backlinks**.
 - **Reading**: the home page is a quick-capture box, the inbox, and *today's feed* grouped by notebook; each notebook has kanban / timeline / table views.
 - **Graph**: **关系图** draws every note as a node and every `[[link]]` as an edge — coloured by notebook (legend doubles as a filter), sized by link count, hover to see neighbours, click to open, drag / zoom / pan, optional orphan notes; a note's page links to the graph centred on it. `GET /api/graph` returns nodes, edges and unresolved link names.
+- **Understanding what was captured**: routing combines the notebooks' keywords, the rules learned from your corrections and a tf-idf similarity to the notes already in each notebook (so it improves as the vault grows); numbers stated in prose（"花了 42 元", "体重 71.5kg", "走了 8000 步"）become `amount` / `weight` / `steps` … properties automatically. Optionally, **设置 → 智能归类** takes an Anthropic API key: uncertain captures are then filed by Claude, long untitled entries get a one-line headline, tags and numeric properties, and the inbox has a one-click **✨ AI 整理**. Everything still works with the key unset.
+- **Editing, not just appending**: agents can read, patch, append to and delete notes, and fix a single timestamped entry inside a journal day page (`PATCH /api/entries/<path>` / `notebook_update_entry`) instead of adding a "correction" entry.
 - **Charts**: numbers an agent passes in `properties` (`{ amount: 35 }`, `{ weight: 71.5 }`) — or that you type as `[amount:: 35]` / `weight:: 71.5` — are kept per entry as Obsidian/Dataview inline fields and plotted per day in the notebook's **图表** view (sum / average / latest, 7 / 30 / 90 days / all, hover for the entries, click to open the day). `notebook_metrics` gives agents the same series.
 
 ## Quick start
@@ -111,6 +113,7 @@ Create a token (接入 Agent → 其他 agent, name it `iphone-shortcut`, write 
 | `notebook_capture` | write | **the one call**: route text to the right notebook (journal entry / card / page), returns related notes |
 | `notebook_list_notebooks` / `notebook_create_notebook` | read / write | areas with kind, keywords, columns |
 | `notebook_today` | read | everything recorded on a day, grouped by notebook |
+| `notebook_update_entry` | write | edit or delete one timestamped entry of a journal day page (by time and an optional text match) |
 | `notebook_metrics` | read | numeric series of a notebook (`amount`, `weight` …): count / sum / avg / min / max / latest + points, optional `key`, `from`, `to` |
 | `notebook_move_note` | write | move a note (e.g. out of the inbox); the router learns |
 | `notebook_whoami` | — | token name, scopes, folder limits |
