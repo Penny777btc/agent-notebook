@@ -395,3 +395,86 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
 .ebody.clamp { max-height: 4.9em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
 .more-btn { border: none; background: transparent; color: var(--accent-text); font-size: 12.5px; padding: 2px 0 6px; font-weight: 500; }
 .more-btn:hover { text-decoration: underline; }
+
+/* ---- reading typography: traditional magazine --------------------------------------
+   Reading bodies (.md) set in a serif with a measured column: indented paragraphs instead of
+   gaps, a lede and drop cap on articles, ruled section heads, pull quotes, ruled tables,
+   underlined links, old-style figures in prose and lining figures in tables. The app chrome
+   (sidebar, buttons, forms) keeps the system sans. */
+:root { --serif: ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", STSong, "Times New Roman", serif; }
+.md { font-family: var(--serif); font-size: 17px; line-height: 1.85; letter-spacing: .005em; text-align: justify; hanging-punctuation: first allow-end last; -webkit-hyphens: auto; hyphens: auto; overflow-wrap: break-word; font-kerning: normal; font-variant-numeric: oldstyle-nums proportional-nums; }
+.md p { margin: 0; text-indent: 0; }
+.md p + p { text-indent: 2em; margin-top: .25em; }
+.md p:has(> .field:first-child) { text-indent: 0; margin-top: .7em; font-family: var(--font); text-align: left; line-height: 1.6; }
+.md p:has(> .field:first-child) + p { text-indent: 0; margin-top: .7em; }
+.md strong { font-weight: 700; } .md em { font-style: italic; }
+.md h1, .md h2, .md h3 { font-family: var(--serif); text-align: left; text-indent: 0; hyphens: manual; font-weight: 700; letter-spacing: 0; text-wrap: balance; }
+.md h1 { font-size: 30px; line-height: 1.2; margin: 1.5em 0 .5em; }
+.md h2 { font-size: 23px; line-height: 1.25; margin: 2em 0 .6em; }
+.md h2::before { content: ''; display: block; width: 2.4em; border-top: 2px solid var(--text); margin-bottom: .65em; }
+.md h3 { font-size: 18.5px; line-height: 1.3; margin: 1.6em 0 .4em; }
+.md h4, .md h5, .md h6 { font-family: var(--font); font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); margin: 1.6em 0 .4em; text-align: left; }
+.md h1 + p, .md h2 + p, .md h3 + p, .md h4 + p, .md hr + p, .md blockquote p, .md li p { text-indent: 0; }
+.md ul, .md ol { padding-left: 1.7em; margin: .7em 0 1em; text-align: left; }
+.md li { margin: .3em 0; padding-left: .2em; } .md li::marker { color: var(--text-3); } .md ol li::marker { font-variant-numeric: lining-nums; }
+.md li > ul, .md li > ol { margin: .2em 0 .3em; }
+.md blockquote { border: none; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 1.5em 0; padding: .9em 0 .9em 2.3em; position: relative; font-size: 18.5px; line-height: 1.7; color: var(--text-2); text-align: left; }
+.md blockquote::before { content: '“'; position: absolute; left: 0; top: .32em; font-size: 3.2em; line-height: 1; color: var(--text-3); font-family: Georgia, "Times New Roman", serif; }
+.md blockquote p + p { text-indent: 0; margin-top: .5em; }
+.md a { color: inherit; text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: .2em; } .md a:hover { color: var(--accent-text); }
+.md .wikilink { color: inherit; text-decoration: underline !important; text-decoration-style: dotted !important; text-decoration-color: var(--text-3) !important; }
+.md .wikilink:hover { color: var(--accent-text); } .md .wikilink.missing { border-bottom: none; color: var(--text-2); }
+.md code { font-size: 80%; letter-spacing: 0; padding: .1em .45em; border-radius: 4px; font-variant-numeric: lining-nums; }
+.md pre { font-size: 13px; line-height: 1.6; text-align: left; margin: 1.2em 0; border-radius: var(--r-s); border-left: 2px solid var(--border); padding: 12px 16px; }
+.md table { width: 100%; margin: 1.5em 0; font-family: var(--font); font-size: 14px; text-align: left; border-top: 1.5px solid var(--text); border-bottom: 1px solid var(--text); font-variant-numeric: lining-nums tabular-nums; hyphens: manual; }
+.md th { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-2); font-weight: 600; padding: 10px 10px 7px; border-bottom: 1px solid var(--border); }
+.md td { padding: 8px 10px; border-bottom: 1px solid var(--border-2); vertical-align: top; } .md tr:last-child td { border-bottom: none; }
+.md hr { border: none; border-top: 1px solid var(--text-2); width: 3em; margin: 2.4em auto; }
+.md img { border-radius: 2px; display: block; margin: 1.4em auto; }
+.md img + em { display: block; text-align: center; font-family: var(--font); font-style: normal; font-size: 12.5px; color: var(--text-3); margin-top: -.9em; margin-bottom: 1.4em; }
+.md input[type=checkbox] { margin-right: .5em; vertical-align: -.05em; }
+
+/* the article page: title, a ruled colophon of properties, then the measured column */
+.article-page { max-width: 760px; }
+.article-page .page-title { font-family: var(--serif); font-size: 40px; font-weight: 700; line-height: 1.12; letter-spacing: -.004em; margin: 8px 0 16px; text-wrap: balance; }
+.article-page .props { grid-template-columns: 96px 1fr; gap: 0 12px; font-family: var(--font); border-top: 1.5px solid var(--text); border-bottom: 1px solid var(--border); padding: 6px 0; margin: 0 0 30px; font-size: 13.5px; }
+.article-page .props .k { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); font-weight: 600; padding: 7px 0; }
+.article-page .props .k > span:first-child { display: none; }
+.article-page .props .v { min-height: 28px; }
+.article-page .body-view { padding: 2px 0; }
+.article-page .body-view > p:first-child { font-size: 19.5px; line-height: 1.7; margin-bottom: .7em; }
+.article-page .body-view.dropcap > p:first-child::first-letter { float: left; font-family: var(--serif); font-size: 3.35em; line-height: .82; font-weight: 700; padding: .1em .12em 0 0; color: var(--text); }
+.article-page .links-box { font-family: var(--font); border-top: 1.5px solid var(--text); }
+.peek .md { font-size: 16px; line-height: 1.8; }
+.peek .article-page .page-title { font-size: 30px; }
+.peek .article-page .body-view > p:first-child { font-size: 17.5px; }
+.peek .article-page .body-view.dropcap > p:first-child::first-letter { font-size: 3em; }
+
+/* journal pages as a diary: the hour in the margin, a bold serif headline, then the entry */
+.entry { position: relative; padding: 20px 0 12px 4.8em; border-top: 1px solid var(--border-2); }
+.entry:first-child { border-top: none; padding-top: 4px; }
+.entry-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 .4em; flex-wrap: wrap; text-align: left; hyphens: manual; }
+.entry-head .time { position: absolute; left: 0; top: calc(20px + .22em); font-family: var(--serif); font-size: 15px; line-height: 1.3; color: var(--text-2); font-variant-numeric: lining-nums tabular-nums; letter-spacing: .02em; }
+.entry:first-child .entry-head .time { top: calc(4px + .22em); }
+.entry-head .etitle { font-family: var(--serif); font-weight: 700; font-size: 19px; line-height: 1.3; letter-spacing: 0; text-wrap: balance; }
+.entry-head .chip.source { font-family: var(--font); align-self: center; }
+.entry p { margin: 0; } .ebody > p:first-child { text-indent: 0; } .ebody p + p { text-indent: 2em; margin-top: .25em; }
+.journal-body { font-size: 17px; }
+.journal-day .md { font-size: 15.5px; line-height: 1.75; }
+.journal-day .entry { padding: 14px 0 6px 4.3em; }
+.journal-day .entry:first-child { padding-top: 2px; }
+.journal-day .entry-head .time { font-size: 13px; top: calc(14px + .25em); }
+.journal-day .entry:first-child .entry-head .time { top: calc(2px + .25em); }
+.journal-day .entry-head .etitle { font-size: 16.5px; }
+.ebody.clamp { max-height: 5.2em; }
+@media (max-width: 760px) {
+  .md { font-size: 16.5px; line-height: 1.8; text-align: left; hyphens: manual; }
+  .article-page .page-title { font-size: 30px; }
+  .article-page .body-view > p:first-child { font-size: 18px; }
+  .article-page .props { grid-template-columns: 1fr; }
+  .entry, .journal-day .entry { padding-left: 0; }
+  .entry-head .time, .journal-day .entry-head .time { position: static; font-size: 13px; }
+  .entry-head .etitle { font-size: 18px; flex-basis: 100%; order: 2; } .entry-head .chip.source { order: 1; margin-left: auto; }
+  .journal-day .entry-head .etitle { font-size: 16px; }
+  .md blockquote { padding-left: 1.8em; font-size: 17px; }
+}

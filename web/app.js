@@ -656,7 +656,7 @@ function moveSelect(note) {
 }
 
 async function noteEditor(note, { onSaved } = {}) {
-  const page = el('div', { class: 'page' });
+  const page = el('div', { class: 'page article-page' });
   const nb = note.notebook ? nbOf(note.notebook.folder) : null;
   let saving = false;
   let updatedEl = null;
@@ -730,6 +730,9 @@ async function noteEditor(note, { onSaved } = {}) {
   const showView = () => {
     bodyWrap.innerHTML = '';
     const v = el('div', { class: 'body-view md' + (nb?.kind === 'journal' ? ' journal-body' : ''), html: renderMd(note.body, { journal: nb?.kind === 'journal' }) });
+    // a drop cap only when the article opens with a real paragraph of prose (plain text first, long enough)
+    const first = v.firstElementChild;
+    if (nb?.kind !== 'journal' && first?.tagName === 'P' && first.firstChild?.nodeType === 3 && /^\p{L}/u.test(first.textContent) && first.textContent.length >= 60) v.classList.add('dropcap');
     v.addEventListener('click', (e) => { if (e.target.closest('a,input')) return; showEdit(); });
     bodyWrap.append(v);
   };
