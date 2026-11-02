@@ -106,8 +106,11 @@ export class Router {
     }
     candidates.sort((a, b) => b.score - a.score);
     const [top, second] = candidates;
-    const decision = top && top.score >= 2 && (!second || top.score - second.score >= 1) ? top.folder : null;
-    return { decision, candidates: candidates.slice(0, 3) };
+    // one weak signal (a single keyword, a 13% similarity) is a suggestion, not a decision: it takes ≥3 points
+    // with a margin to file without asking, and ≥5 with a clear margin before we skip the AI entirely
+    const decision = top && top.score >= 3 && (!second || top.score - second.score >= 1) ? top.folder : null;
+    const strong = !!(top && top.score >= 5 && (!second || top.score - second.score >= 2));
+    return { decision, strong, candidates: candidates.slice(0, 3) };
   }
 }
 
@@ -217,7 +220,7 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
 
   let folder;
   let mode;
-  let classification = { decision: null, candidates: [] };
+  let classification = { decision: null, strong: false, candidates: [] };
   let ai = null;
   if (notebook) {
     if (!vault.isNotebook(notebook)) throw Object.assign(new Error(`Notebook not found: ${notebook}. Call notebook_list_notebooks to see what exists.`), { status: 404 });
@@ -231,10 +234,12 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
   // AI layer (optional): decides when the router could not, and writes a headline / tags / numbers
   const aiOn = auth && aiSettings(auth).enabled;
   const needsTitle = !titleGiven && (text.length > 40 || text.includes('\n')); // Chinese is dense: 40 chars is already a paragraph
-  if (aiOn && (!folder || needsTitle || (aiSettings(auth).mode === 'always' && mode !== 'explicit'))) {
+  const weakAuto = mode === 'auto' && !classification.strong; // filed on thin evidence: let the model confirm
+  if (aiOn && (!folder || weakAuto || needsTitle || (aiSettings(auth).mode === 'always' && mode !== 'explicit'))) {
     ai = await aiEnrich(auth, { text, title: titleGiven ? title : '', tags, notebooks: vault.listNotebooks() }, { log });
     if (ai) {
-      if (!folder && ai.notebook && ai.confidence >= 0.6) { folder = ai.notebook; mode = 'ai'; }
+      if ((!folder || weakAuto) && ai.notebook && ai.confidence >= 0.6) { folder = ai.notebook; mode = 'ai'; }
+      else if (weakAuto && !ai.notebook && ai.confidence < 0.4) { folder = null; mode = 'inbox'; } // the model doesn't buy the heuristic either
       else if (folder && mode === 'auto' && aiSettings(auth).mode === 'always' && ai.notebook && ai.confidence >= 0.8 && ai.notebook !== folder) { folder = ai.notebook; mode = 'ai'; }
       if (!titleGiven && ai.title) title = ai.title;
       if (!tags.length && ai.tags.length) tags = ai.tags;
