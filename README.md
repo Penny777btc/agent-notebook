@@ -104,6 +104,10 @@ curl -fsSL https://raw.githubusercontent.com/Penny777btc/agent-notebook/main/scr
 
 `scripts/deploy-linux.sh` installs Node 22 and Tailscale, clones this repo and the private vault repo (it prints a deploy key to add to the vault repo once), writes a systemd service bound to `127.0.0.1:3777`, and publishes it with `tailscale funnel` as `https://<host>.<tailnet>.ts.net`. Copy the old machine's `vault/.notebook/config.json` beside the vault to keep every token, the owner password and the AI settings; the script rebinds it to localhost and points backups at the deploy key. Agents on the same box (a Hermes or Muse VPS, say) can use `http://127.0.0.1:3777` directly.
 
+### Local agents, remote notebook
+
+When the notebook runs on a server, the agents on your laptop keep their stdio entry (`node cli.js mcp`) and the CLI bridges it to the server over Streamable HTTP: set `AGENT_NOTEBOOK_URL=https://<host>` beside `AGENT_NOTEBOOK_TOKEN` instead of `AGENT_NOTEBOOK_VAULT`. `node src/cli.js connect --remote https://<host>` rewrites every connected agent config on this machine that way (keeping each agent's token, backing the file up first) and checks each token against the server. Clients that speak remote MCP natively (claude.ai connectors, ChatGPT developer-mode connectors) can use `https://<host>/mcp/<token>` or `https://<host>/mcp` with an `Authorization: Bearer` header directly.
+
 ### Remote agents (HTTP)
 
 Who wrote an entry is worked out per request, so one token can serve several agents: an explicit `source` (unless it merely repeats the token name) → the `X-Agent-Name` header → the MCP client's handshake name (Claude, Cursor, Codex…) → a recognisable `User-Agent` (Hermes, Grok, ChatGPT, iOS Shortcuts…) → the token name. The audit log records both the token and the detected agent.

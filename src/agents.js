@@ -74,8 +74,8 @@ export function listAgents({ vault, port }) {
 }
 
 /** The MCP server entry in the three shapes we need. */
-export function serverEntry({ token, vault }) {
-  const env = { AGENT_NOTEBOOK_TOKEN: token, AGENT_NOTEBOOK_VAULT: vault };
+export function serverEntry({ token, vault, url }) {
+  const env = url ? { AGENT_NOTEBOOK_TOKEN: token, AGENT_NOTEBOOK_URL: url } : { AGENT_NOTEBOOK_TOKEN: token, AGENT_NOTEBOOK_VAULT: vault };
   return {
     json: { command: 'node', args: [CLI_PATH, 'mcp'], env },
     opencode: { type: 'local', command: ['node', CLI_PATH, 'mcp'], enabled: true, environment: env },
@@ -86,7 +86,7 @@ export function serverEntry({ token, vault }) {
       ``,
       `[mcp_servers.${SERVER_NAME}.env]`,
       `AGENT_NOTEBOOK_TOKEN = ${JSON.stringify(token)}`,
-      `AGENT_NOTEBOOK_VAULT = ${JSON.stringify(vault)}`,
+      url ? `AGENT_NOTEBOOK_URL = ${JSON.stringify(url)}` : `AGENT_NOTEBOOK_VAULT = ${JSON.stringify(vault)}`,
       ``
     ].join('\n')
   };
@@ -100,12 +100,42 @@ function backup(p) {
   return b;
 }
 
+/** The token an agent's config currently carries for the notebook (null when not connected). */
+export function existingToken(agent) {
+  if (agent.kind === 'manual') return null;
+  const p = h(agent.config);
+  if (!exists(p)) return null;
+  const txt = fs.readFileSync(p, 'utf8');
+  if (agent.kind === 'toml') {
+    const m = txt.match(new RegExp(`\\[mcp_servers\\.${SERVER_NAME}\\.env\\][^\\[]*?AGENT_NOTEBOOK_TOKEN\\s*=\\s*"([^"]+)"`));
+    return m ? m[1] : null;
+  }
+  try {
+    const data = JSON.parse(txt);
+    const e = data[agent.key || 'mcpServers']?.[SERVER_NAME];
+    return e?.env?.AGENT_NOTEBOOK_TOKEN || e?.environment?.AGENT_NOTEBOOK_TOKEN || null;
+  } catch { return null; }
+}
+
+/** Rewrite every connected agent on this machine to talk to a remote notebook server, keeping its token. */
+export function repointAgents({ url, only }) {
+  const out = [];
+  for (const agent of AGENTS) {
+    if (agent.kind === 'manual' || (only && agent.id !== only)) continue;
+    const token = existingToken(agent);
+    if (!token) continue;
+    const written = writeAgentConfig(agent, { token, url });
+    out.push({ agent: agent.name, id: agent.id, token, ...written });
+  }
+  return out;
+}
+
 /** Write the server entry into the agent's config. Returns { configPath, backupPath }. */
-export function writeAgentConfig(agent, { token, vault }) {
+export function writeAgentConfig(agent, { token, vault, url }) {
   if (agent.kind === 'manual') throw new Error(`${agent.name} 需要在应用内手动添加 MCP 服务器`);
   const p = h(agent.config);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const entry = serverEntry({ token, vault });
+  const entry = serverEntry({ token, vault, url });
   const backupPath = backup(p);
 
   if (agent.kind === 'toml') {

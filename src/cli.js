@@ -72,6 +72,14 @@ async function main() {
       return;
     }
     case 'mcp': {
+      const remote = flags.url || process.env.AGENT_NOTEBOOK_URL;
+      if (remote) { // the notebook lives on another machine: bridge stdio to its HTTP MCP endpoint
+        const { runRemoteProxy } = await import('./remote-mcp.js');
+        const t = flags.token || process.env.AGENT_NOTEBOOK_TOKEN;
+        if (!t) { console.error('agent-notebook mcp: AGENT_NOTEBOOK_TOKEN is required with AGENT_NOTEBOOK_URL'); process.exit(1); }
+        await runRemoteProxy({ url: remote, token: t });
+        return;
+      }
       const token = flags.token || process.env.AGENT_NOTEBOOK_TOKEN;
       const principal = auth.authenticate(token);
       if (!principal) {
@@ -105,6 +113,18 @@ async function main() {
       return;
     }
     case 'connect': {
+      if (flags.remote) { // re-point this machine's agents at a notebook server (keeps each agent's existing token)
+        const { repointAgents } = await import('./agents.js');
+        const { probeRemote } = await import('./remote-mcp.js');
+        const rows = repointAgents({ url: String(flags.remote), only: sub });
+        if (!rows.length) return console.log('没有找到已接入的 agent 配置');
+        for (const r of rows) {
+          const probe = r.token ? await probeRemote(String(flags.remote), r.token) : { ok: false, error: '配置里没有 token' };
+          console.log(`${probe.ok ? '✓' : '✗'} ${r.agent.padEnd(18)} ${r.configPath}${probe.ok ? `  (token ${probe.name})` : `  ${probe.error}`}`);
+        }
+        console.log(`\n各 agent 重启后生效；以后它们的读写都走 ${flags.remote}`);
+        return;
+      }
       const scopes = String(flags.scopes || 'read,write').split(',').map((s) => s.trim()).filter(Boolean);
       const folders = flags.folders ? String(flags.folders).split(',').map((s) => s.trim()).filter(Boolean) : ['*'];
       const r = connectAgent({ id: sub, auth, vault: vaultDir, scopes, folders, skill: !flags['no-skill'] });
