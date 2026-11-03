@@ -198,13 +198,25 @@ function parseHash() {
   const [kind, ...restParts] = h.split('/');
   return { kind: kind || 'home', arg: restParts.join('/') };
 }
-async function route() {
+/**
+ * Render the current hash. A navigation clears the page and plays the entrance animation; a refresh
+ * ({ refresh: true }, used after saves and by the background poll) renders into a detached container and
+ * swaps it in at once, keeping the scroll position, so the page never blanks or fades while you read.
+ */
+async function route({ refresh = false } = {}) {
   const r = parseHash();
   if (r.kind === 'board') { location.replace(nbHref(r.arg)); return; }
+  const key = ['settings', 'activity', 'agents', 'graph'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
+  // same page again (after a save, the poll, a filter or date switch) → swap in place; the graph measures itself while rendering
+  const inPlace = (refresh || key === state.routeKey) && key === state.routeKey && r.kind !== 'graph';
   state.route = r;
-  state.routeKey = ['settings', 'activity', 'agents', 'graph'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
+  state.routeKey = key;
   markActive();
-  const main = $('#main'); main.innerHTML = '';
+  const real = $('#main');
+  const scroll = real.scrollTop;
+  const main = inPlace ? el('div') : real;
+  if (!inPlace) real.innerHTML = '';
+  const seq = (state.renderSeq = (state.renderSeq || 0) + 1);
   try {
     if (r.kind === 'nb') await viewNotebook(main, r.arg);
     else if (r.kind === 'note') await viewNote(main, r.arg);
@@ -215,8 +227,12 @@ async function route() {
     else if (r.kind === 'graph') await viewGraph(main, r.arg);
     else await viewHome(main);
   } catch (err) {
+    if (inPlace) return; // a failed background refresh keeps what is on screen
     main.append(el('div', { class: 'page' }, el('h1', { class: 'page-title' }, '出错了'), el('p', { class: 'err' }, err.message)));
   }
+  if (seq !== state.renderSeq) return; // a newer navigation started while this one was loading
+  if (inPlace) { real.replaceChildren(...main.childNodes); real.scrollTop = scroll; }
+  else { real.querySelector(':scope > .page')?.classList.add('enter'); real.scrollTop = 0; }
 }
 function topbar(crumbs, ...actions) {
   const bar = el('div', { class: 'topbar' });
@@ -326,8 +342,9 @@ async function viewHome(main) {
 }
 
 /** Journal cards in lists: clamp long entry bodies to a few lines with a 展开 toggle. */
-function clampEntries(card) {
+function clampEntries(card, tries = 0) {
   requestAnimationFrame(() => {
+    if (!card.isConnected) { if (tries < 30) clampEntries(card, tries + 1); return; } // rendered off-screen: measure once attached
     for (const eb of card.querySelectorAll('.ebody')) {
       eb.classList.add('clamp');
       if (eb.scrollHeight <= eb.clientHeight + 6) { eb.classList.remove('clamp'); continue; }
@@ -1440,8 +1457,19 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', () => { closePeek(); document.body.classList.remove('drawer-open'); route(); });
 document.addEventListener('click', (e) => { if (document.body.classList.contains('drawer-open') && !e.target.closest('#sidebar') && !e.target.closest('.menu-btn')) document.body.classList.remove('drawer-open'); });
 loadSidebar().then(route).catch(() => {}); // a 401 here already opened the login screen
-setInterval(async () => { // light auto-refresh so agent writes show up while you read
+// Light auto-refresh so agent writes show up while you read: ask the server for its change counter and
+// re-render (in place) only when it moved; never while you are typing, peeking or in a dialog.
+async function refreshIfChanged() {
   if (document.hidden || !$('#peek').classList.contains('hidden') || !$('#modal').classList.contains('hidden')) return;
   if (document.activeElement && document.activeElement !== document.body) return;
-  if (['nb', 'home'].includes(state.route?.kind)) { await loadSidebar(); route(); }
-}, 20000);
+  if (window.getSelection && String(window.getSelection())) return; // don't yank text you are selecting
+  let v;
+  try { v = (await get('/api/version')).v; } catch { return; }
+  if (state.version === undefined) { state.version = v; return; }
+  if (v === state.version) return;
+  state.version = v;
+  await loadSidebar();
+  if (['nb', 'home'].includes(state.route?.kind)) route({ refresh: true });
+}
+setInterval(refreshIfChanged, 15000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshIfChanged(); });

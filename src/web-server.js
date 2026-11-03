@@ -1,5 +1,6 @@
 // HTTP server: Notion-style web UI + REST API for the owner, and an MCP endpoint (/mcp) for remote agents.
 import os from 'node:os';
+import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -178,6 +179,12 @@ export function createApp({ vault, auth, backup }) {
     res.json({ ...d, groups: d.groups.filter((g) => auth.can(req.principal, 'read', g.notebook.folder)) });
   });
   api.get('/links/index', guard('read'), (req, res) => res.json(Object.fromEntries(vault.titleIndex())));
+  // change counter for the UI's background refresh: every write is audited, so the audit log's size moves on any change
+  api.get('/version', guard('read'), (req, res) => {
+    let v = '0';
+    try { const st = fs.statSync(auth.auditPath); v = `${st.size}`; } catch { /* no writes yet */ }
+    res.set('Cache-Control', 'no-store').json({ v });
+  });
   api.get('/graph', guard('read'), (req, res) => {
     const g = vault.graph();
     const nodes = g.nodes.filter((n) => auth.can(req.principal, 'read', n.path));
