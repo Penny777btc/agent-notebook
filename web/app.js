@@ -194,7 +194,8 @@ function markActive() { document.querySelectorAll('.side-item').forEach((a) => a
 
 // ---------------------------------------------------------------- routing
 function parseHash() {
-  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  const raw = location.hash.replace(/^#\/?/, '');
+  let h; try { h = decodeURIComponent(raw); } catch { h = raw; } // a stray "%" in a pasted link must not break routing
   const [kind, ...restParts] = h.split('/');
   return { kind: kind || 'home', arg: restParts.join('/') };
 }

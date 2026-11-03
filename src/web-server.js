@@ -148,7 +148,7 @@ export function createApp({ vault, auth, backup }) {
       next();
     } catch (err) { next(err); }
   };
-  const notePath = (req) => decodeURIComponent(req.params[0] || '');
+  const notePath = (req) => String(req.params[0] || ''); // Express has already decoded the wildcard once; a second decode breaks on titles containing "%"
 
   api.get('/status', guard('read'), async (req, res) => {
     res.json({ vault: vault.root, principal: req.principal, backup: await backup.status(), boards: vault.listBoards().length });
