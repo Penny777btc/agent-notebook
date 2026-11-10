@@ -497,13 +497,15 @@ async function viewNotebook(main, folder) {
   if (!state.background) seenNotebook(folder);
   const fresh = nb.notes.filter((n) => isNew(n.path)).length;
   const hasChart = nb.kind === 'journal' || !!mx?.keys?.length;
-  const defaultView = nb.kind === 'board' ? 'kanban' : nb.kind === 'journal' ? 'timeline' : 'table';
+  const kindView = nb.kind === 'board' ? 'kanban' : nb.kind === 'journal' ? 'timeline' : 'table';
+  // the notebook's own setting comes first, unless it asks for a view this notebook cannot show
+  const defaultView = nb.view && !(nb.view === 'kanban' && nb.kind !== 'board') && !(nb.view === 'chart' && !hasChart) ? nb.view : kindView;
   let view = localStorage.getItem('view:' + folder) || defaultView;
   if ((view === 'kanban' && nb.kind !== 'board') || (view === 'chart' && !hasChart)) view = defaultView;
   const page = el('div', { class: 'page wide' });
   page.append(el('div', { class: 'nb-head' }, el('span', { class: 'page-icon' }, nb.icon),
     el('div', { style: 'min-width:0' }, el('h1', { class: 'page-title' }, nb.title),
-      el('div', { class: 'nb-meta' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词 ' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`, fresh ? el('span', { class: 'new-text' }, ` · ${fresh} 条新`) : null))));
+      el('div', { class: 'nb-meta' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.route_tags?.length ? ' · 直达标签 ' + nb.route_tags.slice(0, 6).map((t) => '#' + t).join(' ') + (nb.route_tags.length > 6 ? '…' : '') : ''}${nb.keywords?.length ? ' · 关键词 ' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`, fresh ? el('span', { class: 'new-text' }, ` · ${fresh} 条新`) : null))));
   if (nb.description) page.append(el('p', { class: 'standfirst' }, nb.description));
 
   const setDate = (d) => { state.nbDate = { ...(state.nbDate || {}), [folder]: d }; route(); };
@@ -961,14 +963,16 @@ function notebookDialog({ folder, meta } = {}) {
   const cols = el('input', { type: 'text', value: (meta?.columns || ['待处理', '进行中', '已完成']).join(', ') });
   const colsRow = [el('label', {}, '列'), cols];
   const kw = el('input', { type: 'text', value: (meta?.keywords || []).join(', '), placeholder: '用于自动归类，逗号分隔：睡眠, 运动, 体重' });
+  const rt = el('input', { type: 'text', value: (meta?.route_tags || []).join(', '), placeholder: '带这些标签的内容直接进这里，逗号分隔：晨报, 快讯' });
+  const viewIn = el('select', {}, [['', '按形态默认'], ['timeline', '时间线'], ['table', '表格'], ['kanban', '看板（仅看板形态）'], ['chart', '图表（需要有数字属性）']].map(([v, l]) => el('option', { value: v, selected: (meta?.view || '') === v }, l)));
   const desc = el('textarea', { class: 'body-edit', style: 'min-height:70px;border:1px solid var(--border);border-radius:6px;padding:8px', placeholder: '什么内容属于这里？一句话。agent 和归类器都会参考。' }, meta?.description || '');
   const syncCols = () => colsRow.forEach((n) => n.classList.toggle('hidden', kind.value !== 'board'));
   kind.onchange = syncCols; syncCols();
-  modal(editing ? `设置 · ${meta.title}` : '新建笔记本', el('div', { class: 'form' }, el('label', {}, '文件夹'), folderIn, el('label', {}, '名称'), title, el('label', {}, '图标'), icon, el('label', {}, '形态'), kind, ...colsRow, el('label', {}, '关键词'), kw, el('label', {}, '说明'), desc), {
+  modal(editing ? `设置 · ${meta.title}` : '新建笔记本', el('div', { class: 'form' }, el('label', {}, '文件夹'), folderIn, el('label', {}, '名称'), title, el('label', {}, '图标'), icon, el('label', {}, '形态'), kind, ...colsRow, el('label', {}, '关键词'), kw, el('label', {}, '直达标签'), rt, el('label', {}, '默认视图'), viewIn, el('label', {}, '说明'), desc), {
     okLabel: editing ? '保存' : '创建',
     onOk: async () => {
       const f = folderIn.value.trim(); if (!f) return false;
-      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), description: desc.value.trim(), columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined };
+      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), route_tags: rt.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), view: viewIn.value || null, description: desc.value.trim(), columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined };
       if (editing) await api('PATCH', `/api/notebooks/${encPath(f)}`, payload); else await api('POST', '/api/notebooks', { folder: f, ...payload });
       await loadSidebar(); location.hash = nbHref(f); route();
     }

@@ -14,7 +14,7 @@ A **local-first notebook shared by you and all your AI agents**.
   - `journal` — one page per day, entries appended with a timestamp (健康, 财务)
   - `board` — kanban cards with columns (Alpha看板, 选题会)
   - `pages` — one page per note (阅读, 思维)
-- **Agents call one tool**: `notebook_capture { text }`. The router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`); **设置 → 归类规则** lists every learned keyword / tag / source rule and lets you forget one (or all). The capture result's `related` ranks existing notes by shared title words, shared tags, titles mentioned in the new text and recency in the same notebook, each with the reasons.
+- **Agents call one tool**: `notebook_capture { text }`. A notebook can name **fixed tags** (`route_tags`, 设置 → 直达标签): a capture carrying one of them is filed there directly, ahead of everything else — the way to give a daily feed such as a morning brief its own notebook. Otherwise the router scores every notebook by keywords and by rules learned from your corrections, files the text in the notebook's own shape, or drops it in **收件箱** with suggestions. Assign an inbox item once and the router remembers (`.notebook/rules.json`); **设置 → 归类规则** lists every learned keyword / tag / source rule and lets you forget one (or all). The capture result's `related` ranks existing notes by shared title words, shared tags, titles mentioned in the new text and recency in the same notebook, each with the reasons.
 - **Links**: write `[[Page title]]` anywhere; it resolves by title across notebooks, renders as a link, and the target shows **backlinks**.
 - **Reading**: the home page is a quick-capture box, a one-line summary of what is new, the inbox folded to one line, and *today's feed* grouped by notebook; each notebook has kanban / timeline / table views. Notes that agents wrote since you last looked carry a dot and are counted per notebook in the sidebar; opening a note or a notebook marks it read, and the marks live in the vault (`.notebook/seen.json`, not backed up), so phone and desktop agree. Your own edits never show up as new.
 - **Graph**: **关系图** draws every note as a node and every `[[link]]` as an edge — coloured by notebook (legend doubles as a filter), sized by link count, hover to see neighbours, click to open, drag / zoom / pan, optional orphan notes; a note's page links to the graph centred on it. `GET /api/graph` returns nodes, edges and unresolved link names.
@@ -127,7 +127,7 @@ Create a token (接入 Agent → 其他 agent, name it `iphone-shortcut`, write 
 | Tool | Scope | What it does |
 |---|---|---|
 | `notebook_capture` | write | **the one call**: route text to the right notebook (journal entry / card / page), returns related notes |
-| `notebook_list_notebooks` / `notebook_create_notebook` | read / write | areas with kind, keywords, columns |
+| `notebook_list_notebooks` / `notebook_create_notebook` | read / write | areas with kind, keywords, fixed tags (`route_tags`), default view, columns |
 | `notebook_today` | read | everything recorded on a day, grouped by notebook |
 | `notebook_update_entry` | write | edit or delete one timestamped entry of a journal day page (by time and an optional text match) |
 | `notebook_metrics` | read | numeric series of a notebook (`amount`, `weight` …): count / sum / avg / min / max / latest + points, optional `key`, `from`, `to` |

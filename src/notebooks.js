@@ -12,6 +12,7 @@ const INBOX_FOLDER = '收件箱';
 // whole CJK phrases of 2-6 chars (bounded by non-CJK); longer runs are sentences, not keywords
 const CJK_RUN = /(?<![一-鿿])[一-鿿]{2,6}(?![一-鿿])/g;
 const LATIN_WORD = /[a-z][a-z0-9+#.-]{2,}/gi;
+const PIN_POINTS = 10; // a notebook's own route_tags, see classify()
 
 /** Learns keyword / tag / source → notebook rules from how the owner files things. */
 export class Router {
@@ -81,6 +82,9 @@ export class Router {
       if (nb.inbox) continue;
       let score = 0;
       const reasons = [];
+      // a tag the owner tied to this notebook settles it: it outweighs every learned or guessed signal below
+      const fixed = (nb.route_tags || []).find((t) => lowTags.includes(t.toLowerCase()));
+      if (fixed) { score += PIN_POINTS; reasons.push(`标签 #${fixed} 固定归到这里`); }
       const sim = sims.get(nb.folder);
       if (sim && sim.docs >= 2 && sim.similarity >= 0.12) {
         const pts = sim.similarity >= 0.35 ? 4 : sim.similarity >= 0.22 ? 3 : 2;
@@ -102,15 +106,18 @@ export class Router {
         if (best && best[0] === nb.folder && best[1] >= 3) { score += 2; reasons.push(`${source} 通常记到这里`); }
       }
       if (hay.includes(nb.title.toLowerCase())) { score += 1; reasons.push(`提到「${nb.title}」`); }
-      if (score > 0) candidates.push({ folder: nb.folder, title: nb.title, icon: nb.icon, kind: nb.kind, score, reasons });
+      if (score > 0) candidates.push({ folder: nb.folder, title: nb.title, icon: nb.icon, kind: nb.kind, score, reasons, ...(fixed ? { pinned: true } : {}) });
     }
-    candidates.sort((a, b) => b.score - a.score);
+    // a fixed tag ranks first however many keywords another notebook collected
+    candidates.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.score - a.score);
     const [top, second] = candidates;
+    // two notebooks claiming the same note cancel out: the tag does not settle that one
+    const pinned = !!top?.pinned && !second?.pinned;
     // one weak signal (a single keyword, a 13% similarity) is a suggestion, not a decision: it takes ≥3 points
     // with a margin to file without asking, and ≥5 with a clear margin before we skip the AI entirely
     const decision = top && top.score >= 3 && (!second || top.score - second.score >= 1) ? top.folder : null;
     const strong = !!(top && top.score >= 5 && (!second || top.score - second.score >= 2));
-    return { decision, strong, candidates: candidates.slice(0, 3) };
+    return { decision: pinned ? top.folder : decision, strong: pinned || strong, pinned, candidates: candidates.slice(0, 3) };
   }
 }
 
@@ -220,7 +227,7 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
 
   let folder;
   let mode;
-  let classification = { decision: null, strong: false, candidates: [] };
+  let classification = { decision: null, strong: false, pinned: false, candidates: [] };
   let ai = null;
   if (notebook) {
     if (!vault.isNotebook(notebook)) throw Object.assign(new Error(`Notebook not found: ${notebook}. Call notebook_list_notebooks to see what exists.`), { status: 404 });
@@ -240,7 +247,7 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
     if (ai) {
       if ((!folder || weakAuto) && ai.notebook && ai.confidence >= 0.6) { folder = ai.notebook; mode = 'ai'; }
       else if (weakAuto && !ai.notebook && ai.confidence < 0.4) { folder = null; mode = 'inbox'; } // the model doesn't buy the heuristic either
-      else if (folder && mode === 'auto' && aiSettings(auth).mode === 'always' && ai.notebook && ai.confidence >= 0.8 && ai.notebook !== folder) { folder = ai.notebook; mode = 'ai'; }
+      else if (folder && mode === 'auto' && !classification.pinned && aiSettings(auth).mode === 'always' && ai.notebook && ai.confidence >= 0.8 && ai.notebook !== folder) { folder = ai.notebook; mode = 'ai'; }
       if (!titleGiven && ai.title) title = ai.title;
       if (!tags.length && ai.tags.length) tags = ai.tags;
       properties = { ...ai.properties, ...properties };

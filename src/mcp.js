@@ -38,7 +38,7 @@ export function buildMcpServer({ vault, auth, principal, hints = {} }) {
 
   server.registerTool('notebook_capture', {
     title: 'Capture (the one call you need)',
-    description: 'Keep something: a finding, idea, health/reading/finance/thinking note, alpha lead, topic. The notebook routes it to the right notebook by keywords and learned rules, or to 收件箱 if unsure. Journals get a timestamped entry on today\'s page, boards get a card, page notebooks get a page. Only pass `notebook` when the owner said where it belongs. Returns where it went plus related notes to [[link]].',
+    description: 'Keep something: a finding, idea, health/reading/finance/thinking note, alpha lead, topic. The notebook routes it to the right notebook by its fixed tags (route_tags), keywords and learned rules, or to 收件箱 if unsure. Journals get a timestamped entry on today\'s page, boards get a card, page notebooks get a page. Only pass `notebook` when the owner said where it belongs. Returns where it went plus related notes to [[link]].',
     inputSchema: {
       text: z.string().describe('The content to keep (Markdown ok). Use [[Title]] to link other notes.'),
       title: z.string().optional().describe('Short headline (≤60 chars). Defaults to the first line.'),
@@ -54,7 +54,7 @@ export function buildMcpServer({ vault, auth, principal, hints = {} }) {
 
   server.registerTool('notebook_list_notebooks', {
     title: 'List notebooks',
-    description: 'All notebooks (areas) with kind (board/journal/pages), keywords, description and columns. Call once to learn the owner\'s areas.',
+    description: 'All notebooks (areas) with kind (board/journal/pages), keywords, route_tags (a capture carrying one of these tags is filed there directly), description and columns. Call once to learn the owner\'s areas.',
     inputSchema: {},
     annotations: { readOnlyHint: true }
   }, guarded('read', null, function list_notebooks() {
@@ -106,6 +106,8 @@ export function buildMcpServer({ vault, auth, principal, hints = {} }) {
       kind: z.enum(['board', 'journal', 'pages']).optional().default('pages'),
       description: z.string().optional().describe('What belongs here — used for routing'),
       keywords: z.array(z.string()).optional().describe('Routing keywords'),
+      route_tags: z.array(z.string()).optional().describe('Tags that file a capture here directly, ahead of every other signal'),
+      view: z.enum(['kanban', 'timeline', 'table', 'chart']).optional().describe('The view the notebook opens in'),
       columns: z.array(z.string()).optional()
     }
   }, guarded('write', (a) => a.folder, function create_notebook(args) {

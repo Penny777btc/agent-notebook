@@ -13,6 +13,7 @@ const BOARD_FILE = '_board.md';
 const NOTEBOOK_FILE = '_notebook.md';
 const META_FILES = new Set([BOARD_FILE, NOTEBOOK_FILE]);
 export const NOTEBOOK_KINDS = ['board', 'journal', 'pages'];
+export const NOTEBOOK_VIEWS = ['kanban', 'timeline', 'table', 'chart'];
 export const WIKILINK_RE = /\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]/g;
 const IGNORED_DIRS = new Set(['.git', '.notebook', '.obsidian', '.trash', 'node_modules']);
 
@@ -229,6 +230,8 @@ export class Vault {
       kind,
       description: parsed.content.trim(),
       keywords: Array.isArray(d.keywords) ? d.keywords.map(String) : [],
+      route_tags: cleanTags(d.route_tags),
+      view: NOTEBOOK_VIEWS.includes(d.view) ? d.view : null,
       columns: kind === 'board' ? (Array.isArray(d.columns) && d.columns.length ? d.columns : DEFAULT_COLUMNS) : null,
       inbox: !!d.inbox,
       order: typeof d.order === 'number' ? d.order : 100
@@ -253,13 +256,13 @@ export class Vault {
     return this.listNotebooks().find((n) => n.inbox)?.folder || null;
   }
 
-  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], columns, inbox = false, order }) {
+  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, inbox = false, order }) {
     if (!folder) throw new VaultError('folder is required', 400);
     if (!NOTEBOOK_KINDS.includes(kind)) throw new VaultError(`kind must be one of ${NOTEBOOK_KINDS.join(', ')}`, 400);
     const dirAbs = this.resolve(folder);
     fs.mkdirSync(dirAbs, { recursive: true });
     if (this.isNotebook(folder)) throw new VaultError(`Notebook already exists: ${folder}`, 409);
-    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, order });
+    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, order });
     fs.writeFileSync(path.join(dirAbs, NOTEBOOK_FILE), matter.stringify('\n' + description + '\n', data));
     return this.getNotebookMeta(folder);
   }
@@ -273,6 +276,7 @@ export class Vault {
       icon: patch.icon ?? meta.icon,
       kind: patch.kind ?? meta.kind,
       keywords: patch.keywords ?? meta.keywords,
+      ...routing({ route_tags: patch.route_tags ?? meta.route_tags, view: patch.view !== undefined ? patch.view : meta.view }),
       columns: (patch.kind ?? meta.kind) === 'board' ? (patch.columns ?? meta.columns ?? DEFAULT_COLUMNS) : undefined,
       inbox: (patch.inbox ?? meta.inbox) || undefined,
       order: patch.order ?? meta.order
@@ -525,6 +529,23 @@ export function plainText(md) {
     .replace(/[*_`~]+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Tags as the owner typed them: trimmed, without a leading #, no empties or duplicates (compared case-insensitively). */
+function cleanTags(v) {
+  const out = new Map();
+  for (const t of Array.isArray(v) ? v : []) {
+    const tag = String(t ?? '').trim().replace(/^#/, '');
+    if (tag && !out.has(tag.toLowerCase())) out.set(tag.toLowerCase(), tag);
+  }
+  return [...out.values()];
+}
+
+/** The optional notebook settings, in the form they are written to _notebook.md (left out when unset). */
+function routing({ route_tags, view }) {
+  if (view && !NOTEBOOK_VIEWS.includes(view)) throw new VaultError(`view must be one of ${NOTEBOOK_VIEWS.join(', ')}`, 400);
+  const tags = cleanTags(route_tags);
+  return { route_tags: tags.length ? tags : undefined, view: view || undefined };
 }
 
 function stripUndefined(obj) {
