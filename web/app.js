@@ -1,4 +1,6 @@
 // Agent Notebook web UI — vanilla JS, hash routing, talks to /api.
+import { createSanitizer } from './sanitize.js';
+const sanitizeHtml = window.DOMPurify?.isSupported ? createSanitizer(window.DOMPurify) : null;
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, attrs = {}, ...children) => {
   const n = document.createElement(tag);
@@ -99,12 +101,11 @@ function linkify(md) {
   }).replace(/\[([^\[\]:\n]{1,40}?)::\s*([^\]\n]+?)\]/g, (m, k, v) => `<span class="field"><span class="fk">${esc(k.trim())}</span>${esc(v.trim())}</span>`); // [amount:: 35] inline fields
 }
 function renderMd(md, { journal = false } = {}) {
-  const html = marked.parse(linkify(md), { gfm: true, breaks: true });
+  if (!sanitizeHtml) return `<pre>${esc(md)}</pre>`; // the sanitizer failed to load: show the source as plain text rather than render unfiltered HTML
+  const html = sanitizeHtml(marked.parse(linkify(md), { gfm: true, breaks: true }));
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script,iframe,object,embed,style').forEach((n) => n.remove());
-  doc.querySelectorAll('*').forEach((n) => { for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (a.name === 'href' && /^javascript:/i.test(a.value))) n.removeAttribute(a.name); });
   doc.querySelectorAll('a[href^="http"]').forEach((a) => {
-    a.target = '_blank'; a.rel = 'noopener';
+    a.target = '_blank'; a.rel = 'noopener noreferrer';
     const text = a.textContent.trim();
     if (/^https?:\/\//.test(text) || text === a.getAttribute('href')) { a.title = a.getAttribute('href'); a.textContent = urlLabel(a.getAttribute('href')); a.classList.add('url'); }
   });

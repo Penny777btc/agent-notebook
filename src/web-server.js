@@ -43,6 +43,22 @@ export function createApp({ vault, auth, backup }) {
   const captureOpts = { auth, log: aiLog };
   app.use(express.json({ limit: '5mb' }));
 
+  // ---- browser hardening ----------------------------------------------
+  // Second line of defence behind the Markdown sanitizer: even if hostile HTML reached the page, the browser will not run
+  // inline or third-party script, post forms elsewhere, or let another site frame the UI. Inline styles stay allowed (the UI uses them).
+  const CSP = [
+    "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data: https:", "font-src 'self' data:",
+    "connect-src 'self'", "manifest-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+  ].join('; ');
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+  });
+
   // ---- identify the caller -------------------------------------------
   app.use((req, res, next) => {
     const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
@@ -101,7 +117,7 @@ export function createApp({ vault, auth, backup }) {
       const r = await capture(vault, router, { text, title: q.title || undefined, notebook: q.notebook || undefined, tags, source }, captureOpts);
       auth.audit(principal, 'capture', r.path, { via: 'quick', mode: r.mode, notebook: r.notebook.folder, ...(source !== principal.name ? { source } : {}) });
       if ((req.headers.accept || '').includes('text/html')) {
-        res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已记入</title><body style="font-family:-apple-system,sans-serif;padding:40px 24px;color:#1d1d1f"><h2 style="margin:0 0 8px">${r.notebook.icon} 已记入「${esc(r.notebook.title)}」</h2><p style="color:#6e6e73">${esc(r.title)}</p><p style="color:#86868b;font-size:13px">${esc(r.hint)}</p></body>`);
+        res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已记入</title><body style="font-family:-apple-system,sans-serif;padding:40px 24px;color:#1d1d1f"><h2 style="margin:0 0 8px">${esc(r.notebook.icon)} 已记入「${esc(r.notebook.title)}」</h2><p style="color:#6e6e73">${esc(r.title)}</p><p style="color:#86868b;font-size:13px">${esc(r.hint)}</p></body>`);
       } else res.json({ ok: true, notebook: r.notebook, title: r.title, path: r.path, mode: r.mode, hint: r.hint, related: r.related });
     } catch (err) { next(err); }
   });
@@ -361,6 +377,7 @@ export function createApp({ vault, auth, backup }) {
 
   // ---- static UI -------------------------------------------------------
   app.use('/vendor/marked.js', express.static(path.join(here, '..', 'node_modules', 'marked', 'lib', 'marked.umd.js')));
+  app.use('/vendor/purify.js', express.static(path.join(here, '..', 'node_modules', 'dompurify', 'dist', 'purify.min.js')));
   app.use(express.static(path.join(here, '..', 'web'), { etag: true, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
   // ---- errors ----------------------------------------------------------

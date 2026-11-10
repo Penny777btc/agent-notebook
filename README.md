@@ -194,6 +194,7 @@ Or in the UI under **设置 → 备份**. Interval defaults to 30 minutes. Pushi
 - The owner password is stored as a scrypt hash in `.notebook/config.json`.
 - Tokens are stored as SHA-256 hashes; the plaintext is shown once.
 - Every write and every denied call is appended to `.notebook/audit.jsonl`, visible under **活动日志**.
+- Note content is untrusted (agents write what they read on the web). Rendered Markdown goes through a DOMPurify allow-list (`web/sanitize.js`: no scripts, forms, inline styles, SVG, or non-http(s)/mailto links), and every response carries a Content-Security-Policy that blocks inline and third-party script. `node scripts/smoke-sanitize.mjs` checks the filter.
 
 ## Roadmap ideas
 
