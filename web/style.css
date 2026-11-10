@@ -532,3 +532,24 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
   .journal-day .entry-head .etitle { font-size: 16px; }
   .md blockquote { padding-left: 1.8em; font-size: 17px; }
 }
+
+/* ---- unread: what agents wrote since the owner last looked ---- */
+.side-item .unread { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--accent-text); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; flex: none; }
+.side-item .unread::before, .new-dot { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+.side-item .unread + .count { margin-left: 6px; }
+.new-text { color: var(--accent-text); font-weight: 500; }
+.feed-item[data-new] .dot { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; margin: 8px -4px 0 0; }
+.inbox-item[data-new] .t::before, .card[data-new] .t::before, .list tr[data-new] td:first-child > div:first-child::before {
+  content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 7px; vertical-align: middle; position: relative; top: -1px; }
+.journal-day[data-new] { position: relative; }
+.journal-day[data-new]::after { content: '新'; position: absolute; top: 8px; right: 4px; padding: 0 7px; border-radius: 999px; background: var(--accent-bg); color: var(--accent-text); font-size: 11px; font-weight: 600; line-height: 18px; }
+/* home: the new-content strip and the collapsed inbox are one line each */
+.strip { background: var(--bg-card); box-shadow: var(--shadow); border-radius: var(--r); padding: 10px 14px; margin: 0 0 12px; }
+.capture + .strip, .banner + .strip { margin-top: -8px; }
+.strip + .toolbar { margin-top: 20px !important; }
+.strip-row { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; min-height: 28px; }
+.strip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
+a.strip-title:hover { color: var(--accent-text); }
+.strip-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.strip-list { margin-top: 10px; border-top: 1px solid var(--border-2); }
+.strip-list > :last-child { border-bottom: none; }

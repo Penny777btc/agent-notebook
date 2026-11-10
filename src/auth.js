@@ -118,7 +118,7 @@ export class Auth {
     if (!t.lastUsed || Date.now() - Date.parse(t.lastUsed) > LAST_USED_GRANULARITY_MS) {
       this.update((cfg) => { const x = cfg.tokens.find((y) => y.hash === h); if (x) x.lastUsed = new Date().toISOString(); });
     }
-    return { name: t.name, scopes: t.scopes, folders: t.folders, kind: 'token' };
+    return { name: t.name, scopes: t.scopes, folders: t.folders, kind: 'token', ...(t.device ? { device: true } : {}) }; // device: a browser the owner logged in from
   }
 
   // ---- owner password (phone / remote access to the web UI) ---------------------------------

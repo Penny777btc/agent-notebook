@@ -12,6 +12,7 @@ import { relatedEdges, conceptsBatch, notesNeedingConcepts } from './relations.j
 import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
 import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
+import { ReadState } from './seen.js';
 import { AI_MODELS, AI_PROVIDERS, GROK_MODELS, aiSettings, testConnection } from './enrich.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,15 @@ export function createApp({ vault, auth, backup }) {
   const router = new Router(vault);
   const aiLog = (e) => auth.audit({ name: 'ai' }, e.event, e.notebook || '', e);
   const captureOpts = { auth, log: aiLog };
+  // ---- unread marks ------------------------------------------------------
+  // The reader is the owner: the local UI, or a browser / phone that logged in with the password. Agents never mark things read.
+  const seen = new ReadState(vault);
+  const isReader = (req) => req.principal?.kind === 'owner' || req.principal?.device === true;
+  const unreadFor = (req) => seen.unread({ can: (p) => auth.can(req.principal, 'read', p) });
+  // A write changes a note's `updated` time. The owner's own edits and AI housekeeping are not news, so a note that was read
+  // before such a write is marked read again after it; one with unseen agent writes stays unread.
+  const unreadBefore = (req) => (!req || isReader(req) ? new Set(seen.unread().paths) : null);
+  const keepRead = (before, to, from = to) => { if (before && to && !before.has(from)) seen.mark({ path: to }); };
   app.use(express.json({ limit: '5mb' }));
 
   // ---- browser hardening ----------------------------------------------
@@ -199,7 +209,7 @@ export function createApp({ vault, auth, backup }) {
   api.get('/version', guard('read'), (req, res) => {
     let v = '0';
     try { const st = fs.statSync(auth.auditPath); v = `${st.size}`; } catch { /* no writes yet */ }
-    res.set('Cache-Control', 'no-store').json({ v });
+    res.set('Cache-Control', 'no-store').json({ v: `${v}.${seen.stamp()}` }); // marking read on one device refreshes the others
   });
   api.get('/graph', guard('read'), (req, res) => {
     const g = vault.graph();
@@ -213,14 +223,18 @@ export function createApp({ vault, auth, backup }) {
   api.post('/ai/concepts', guard('write'), async (req, res, next) => {
     try {
       if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里选择方式并开启' });
+      const before = unreadBefore();
       const r = await conceptsBatch(vault, auth, { limit: Math.min(10, Number(req.body?.limit) || 5), paths: req.body?.paths, log: aiLog });
+      for (const d of r.done) keepRead(before, d.path);
       req.audit('ai_concepts', '', { via: 'web', done: r.done.length, failed: r.failed.length, left: r.left });
       res.json(r);
     } catch (err) { next(err); }
   });
   api.post('/capture', guard('write', (r) => r.body.notebook || ''), async (req, res, next) => {
     try {
+      const before = unreadBefore(req);
       const r = await capture(vault, router, { ...req.body, source: req.sourceOf(req.body.source) }, captureOpts);
+      keepRead(before, r.path);
       req.audit('capture', r.path, { via: 'web', mode: r.mode, notebook: r.notebook.folder });
       res.status(201).json(r);
     } catch (err) { next(err); }
@@ -249,15 +263,19 @@ export function createApp({ vault, auth, backup }) {
   api.post('/ai/organize', guard('write', () => vault.inboxFolder() || ''), async (req, res, next) => {
     try {
       if (!aiSettings(auth).enabled) return res.status(400).json({ error: 'AI 未开启：先在 设置 → 智能归类 里选择方式并开启' });
+      const before = unreadBefore();
       const r = await organizeInbox(vault, router, auth, { paths: req.body?.paths, log: aiLog });
+      for (const d of r.done) keepRead(before, d.to, d.from);
       req.audit('ai_organize', vault.inboxFolder(), { via: 'web', moved: r.done.length, left: r.left.length });
       res.json(r);
     } catch (err) { next(err); }
   });
   api.post('/move', guard('write', (r) => r.body.folder || ''), (req, res) => {
     const { path: p, folder, learn } = req.body;
+    const wasUnread = unreadBefore(req);
     const before = vault.getNote(p);
     const moved = vault.moveNote(p, folder);
+    keepRead(wasUnread, moved.path, p);
     if (learn !== false) router.learn({ title: before.title, tags: before.properties.tags || [], source: before.properties.source }, folder);
     req.audit('move_note', moved.path, { via: 'web', from: before.folder, learn: learn !== false });
     res.json(moved);
@@ -281,23 +299,42 @@ export function createApp({ vault, auth, backup }) {
     const { folder, status, tag, source, date, since, limit, recursive } = req.query;
     res.json(vault.listNotes({ folder, status, tag, source, date, since, limit: limit ? Number(limit) : 200, recursive: recursive !== 'false' }).filter((n) => auth.can(req.principal, 'read', n.path)));
   });
+  // what agents wrote since the owner last looked, and the owner marking a note / a notebook / everything as read
+  api.get('/unread', guard('read'), (req, res) => {
+    const u = unreadFor(req);
+    if (req.query.items === '1' && u.total) { const want = new Set(u.paths); u.items = vault.listNotes({ limit: 1e6 }).filter((n) => want.has(n.path)).slice(0, 200); }
+    res.set('Cache-Control', 'no-store').json(u);
+  });
+  api.post('/seen', guard('read'), (req, res, next) => {
+    try {
+      if (!isReader(req)) return res.status(403).json({ error: 'only the owner\'s own browser can mark notes as read' });
+      const { path: p, folder, all, at } = req.body || {};
+      seen.mark({ path: p ? String(p) : undefined, folder: folder ? String(folder) : undefined, all: all === true, at });
+      res.json(unreadFor(req));
+    } catch (err) { next(err); }
+  });
   api.get('/search', guard('read'), (req, res) => res.json(vault.search(req.query.q, { limit: 50 }).filter((n) => auth.can(req.principal, 'read', n.path))));
   api.post('/notes', guard('write', (r) => r.body.folder || ''), (req, res) => {
     const { folder, title, body, ...properties } = req.body;
     const note = vault.createNote({ folder, title, body, properties: { ...properties, source: req.sourceOf(properties.source) } });
+    if (isReader(req)) seen.mark({ path: note.path });
     req.audit('create_note', note.path, { via: 'web' });
     res.status(201).json(note);
   });
   api.get('/notes/*', guard('read', notePath), (req, res) => res.json(vault.getNoteFull(notePath(req))));
   api.patch('/notes/*', guard('write', notePath), (req, res) => {
     const { title, body, append, ...properties } = req.body;
+    const before = unreadBefore(req);
     const note = vault.updateNote(notePath(req), { title, body, append, properties });
+    keepRead(before, note.path, notePath(req));
     req.audit('update_note', note.path, { via: 'web', fields: Object.keys(req.body) });
     res.json(note);
   });
   // one entry inside a journal day page: PATCH to edit, with remove:true to delete
   api.patch('/entries/*', guard('write', notePath), (req, res) => {
+    const before = unreadBefore(req);
     const r = vault.updateJournalEntry(notePath(req), req.body || {});
+    keepRead(before, notePath(req));
     req.audit(req.body?.remove ? 'delete_entry' : 'update_entry', notePath(req), { via: 'web', time: req.body?.time, match: req.body?.match });
     res.json(r);
   });

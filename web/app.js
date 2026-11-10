@@ -18,6 +18,7 @@ const localDate = (d = new Date()) => new Date(d.getTime() - d.getTimezoneOffset
 const today = () => localDate();
 const shiftDate = (iso, days) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + days); return localDate(d); };
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '';
+const fmtShort = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 const fmtClock = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
 const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries', 'concepts_hash'];
 const KIND_LABEL = { board: '看板', journal: '日志', pages: '页面集' };
@@ -89,7 +90,7 @@ function urlLabel(href, max = 28) {
     return host + (path.length > room ? path.slice(0, room - 1) + '…' : path);
   } catch { return href; }
 }
-const cleanExcerpt = (t, n = 140) => String(t || '').replace(/https?:\/\/[^\s)）\]]+/g, (m) => urlLabel(m, 22)).slice(0, n);
+const cleanExcerpt = (t, n = 140) => String(t || '').replace(/<\/?[a-z][^>]*>/gi, ' ').replace(/\s{2,}/g, ' ').replace(/https?:\/\/[^\s)）\]]+/g, (m) => urlLabel(m, 22)).trim().slice(0, n);
 
 function linkify(md) {
   return String(md || '').replace(/\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]/g, (m, name, label) => {
@@ -149,12 +150,68 @@ document.addEventListener('click', async (e) => {
 });
 
 // ---------------------------------------------------------------- state
-const state = { notebooks: [], tree: [], linkIndex: {}, route: null, routeKey: '', openFolders: new Set(JSON.parse(localStorage.getItem('openFolders') || '[]')), feedDate: today() };
+const state = { notebooks: [], tree: [], linkIndex: {}, route: null, routeKey: '', openFolders: new Set(JSON.parse(localStorage.getItem('openFolders') || '[]')), feedDate: today(),
+  unread: { now: '', total: 0, folders: {}, paths: new Set() }, visitNew: new Set() };
 
 async function loadSidebar() {
-  [state.notebooks, state.tree, state.linkIndex] = await Promise.all([get('/api/notebooks'), get('/api/tree'), get('/api/links/index')]);
+  let unread;
+  [state.notebooks, state.tree, state.linkIndex, unread] = await Promise.all([get('/api/notebooks'), get('/api/tree'), get('/api/links/index'), get('/api/unread').catch(() => null)]);
+  if (unread) state.unread = { ...unread, paths: new Set(unread.paths) };
   get('/api/ai').then((a) => { state.ai = a; }).catch(() => { state.ai = null; });
   renderSidebar();
+}
+
+// ---------------------------------------------------------------- unread: what agents wrote since you last looked
+// The marks live on the server, so the phone and the desktop agree. Opening a note marks it read, opening a notebook marks
+// the notebook read; state.visitNew keeps the dots on screen for the rest of that visit so you can still see what was new.
+const isNew = (p) => state.unread.paths.has(p) || state.visitNew.has(p);
+const newAttr = (p) => (isNew(p) ? p : null);
+function setUnread(u) {
+  state.unread = { ...u, paths: new Set(u.paths) };
+  renderSidebar();
+  const strip = $('#new-strip'); if (strip) strip.replaceWith(newStrip());
+  const n = $('#inbox-new'); if (n) n.textContent = inboxNewLabel();
+}
+async function markSeen(body) {
+  try { setUnread(await api('POST', '/api/seen', body)); } catch { /* not the owner's browser, or offline: the dots simply stay */ }
+}
+function seenNote(p) {
+  if (!isNew(p)) return;
+  state.visitNew.delete(p);
+  document.querySelectorAll('[data-new]').forEach((n) => { if (n.dataset.new === p) n.removeAttribute('data-new'); });
+  if (state.unread.paths.has(p)) markSeen({ path: p });
+}
+/** Entering a notebook marks it read (up to what this page has loaded); its new items keep their dot until you leave. */
+function seenNotebook(folder) {
+  const mine = [...state.unread.paths].filter((p) => p.startsWith(folder + '/'));
+  if (!mine.length) return;
+  for (const p of mine) state.visitNew.add(p);
+  markSeen({ folder, at: state.unread.now });
+}
+const inboxNewLabel = () => { const inbox = state.notebooks.find((n) => n.inbox); const n = inbox ? state.unread.folders[inbox.folder] || 0 : 0; return n ? ` · ${n} 条新` : ''; };
+function newStrip() {
+  const u = state.unread;
+  const box = el('div', { id: 'new-strip' });
+  if (!u.total) return box;
+  const open = !!state.newOpen;
+  const chips = Object.entries(u.folders).sort((a, b) => b[1] - a[1]).map(([f, n]) => el('a', { class: 'chip btn-chip', href: nbOf(f) ? nbHref(f) : `#/folder/${encodeURIComponent(f)}` }, `${nbOf(f) ? nbOf(f).icon + ' ' + nbOf(f).title : f || '其他页面'} ${n}`));
+  box.className = 'strip';
+  box.append(el('div', { class: 'strip-row' },
+    el('span', { class: 'new-dot' }), el('span', { class: 'strip-title' }, `${u.total} 条新内容`), el('div', { class: 'strip-chips' }, chips), el('div', { class: 'spacer' }),
+    el('button', { class: 'btn small', onclick: () => { state.newOpen = !open; $('#new-strip').replaceWith(newStrip()); } }, open ? '收起' : '列出'),
+    el('button', { class: 'btn small', title: '把现在所有的新内容标为已读', onclick: () => { state.newOpen = false; state.visitNew.clear(); document.querySelectorAll('[data-new]').forEach((n) => n.removeAttribute('data-new')); markSeen({ all: true, at: u.now }); } }, '全部已读')));
+  if (open) {
+    const list = el('div', { class: 'strip-list' }, el('div', { class: 'muted', style: 'font-size:13px;padding:8px 0' }, '加载中…'));
+    box.append(list);
+    get('/api/unread?items=1').then((r) => {
+      list.innerHTML = '';
+      for (const it of r.items || []) list.append(el('div', { class: 'feed-item', 'data-new': it.path, onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
+        el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, cleanExcerpt(it.excerpt, 120))),
+        el('div', { class: 'meta' }, nbOf(it.folder) && el('span', { class: 'chip' }, `${nbOf(it.folder).icon} ${nbOf(it.folder).title}`), chipSource(it.source), el('span', {}, fmtShort(it.updated)))));
+      if (!(r.items || []).length) list.append(el('div', { class: 'muted', style: 'font-size:13px;padding:8px 0' }, '没有新内容了'));
+    }).catch(() => { list.textContent = '加载失败'; });
+  }
+  return box;
 }
 const nbOf = (folder) => state.notebooks.find((n) => n.folder === folder);
 const nbHref = (folder) => `#/nb/${encodeURIComponent(folder)}`;
@@ -164,6 +221,7 @@ function renderSidebar() {
   for (const nb of state.notebooks) {
     list.append(el('a', { class: 'side-item', href: nbHref(nb.folder), 'data-route': `nb:${nb.folder}` },
       el('span', { class: 'emoji' }, nb.icon), nb.title,
+      !nb.inbox && state.unread.folders[nb.folder] ? el('span', { class: 'unread', title: `${state.unread.folders[nb.folder]} 条新内容` }, state.unread.folders[nb.folder]) : null,
       nb.inbox && nb.count ? el('span', { class: 'badge' }, nb.count) : el('span', { class: 'count' }, nb.count || '')));
   }
   const tree = $('#tree'); tree.innerHTML = '';
@@ -217,7 +275,8 @@ async function route({ refresh = false } = {}) {
   const real = $('#main');
   const scroll = real.scrollTop;
   const main = inPlace ? el('div') : real;
-  if (!inPlace) real.innerHTML = '';
+  if (!inPlace) { real.innerHTML = ''; state.visitNew = new Set(); }
+  state.background = refresh; // a background refresh must not mark anything read: nobody may be looking
   const seq = (state.renderSeq = (state.renderSeq || 0) + 1);
   try {
     if (r.kind === 'nb') await viewNotebook(main, r.arg);
@@ -316,17 +375,29 @@ async function viewHome(main) {
       el('button', { class: 'icon-btn', title: '不再提示', onclick: (e) => { localStorage.setItem('banner:agents', key); e.currentTarget.closest('.banner').remove(); } }, '✕')));
   } catch {}
 
-  // inbox
+  // what is new since the last visit, then the inbox as one line (it used to push today's notes five screens down)
+  page.append(newStrip());
   const inbox = state.notebooks.find((n) => n.inbox);
   if (inbox && inbox.count) {
-    const items = await get(`/api/notes?folder=${encodeURIComponent(inbox.folder)}&recursive=false&limit=50`);
-    page.append(el('div', { class: 'feed-head' }, el('a', { href: nbHref(inbox.folder) }, `${inbox.icon} 收件箱`), el('span', { class: 'n' }, `${items.length} 条待归类`), el('div', { class: 'spacer' }), aiOrganizeButton()));
-    for (const n of items) {
-      page.append(el('div', { class: 'inbox-item' },
-        el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtClock(n.created)),
-        n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, cleanExcerpt(n.excerpt, 140)),
-        assignChips(n)));
+    const open = !!state.inboxOpen;
+    const box = el('div', { class: 'strip' });
+    box.append(el('div', { class: 'strip-row' },
+      el('a', { class: 'strip-title', href: nbHref(inbox.folder) }, `${inbox.icon} 收件箱`), el('span', { class: 'muted', style: 'font-size:13px' }, `${inbox.count} 条待归类`, el('span', { id: 'inbox-new', class: 'new-text' }, inboxNewLabel())),
+      el('div', { class: 'spacer' }), aiOrganizeButton(),
+      el('button', { class: 'btn small', onclick: () => { state.inboxOpen = !open; route(); } }, open ? '收起' : '展开')));
+    if (open) {
+      const items = await get(`/api/notes?folder=${encodeURIComponent(inbox.folder)}&recursive=false&limit=50`);
+      const list = el('div', { class: 'strip-list' });
+      for (const n of items) {
+        list.append(el('div', { class: 'inbox-item', 'data-new': newAttr(n.path) },
+          el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtClock(n.created)),
+          n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, cleanExcerpt(n.excerpt, 140)),
+          assignChips(n)));
+      }
+      if (inbox.count > items.length) list.append(el('a', { class: 'muted', href: nbHref(inbox.folder), style: 'display:block;font-size:13px;padding:10px 4px' }, `还有 ${inbox.count - items.length} 条，去收件箱看全部 →`));
+      box.append(list);
     }
+    page.append(box);
   }
 
   // today's feed with date nav
@@ -369,9 +440,11 @@ function feedGroup(g) {
   const nb = g.notebook;
   const box = el('div', { class: 'feed-group' });
   box.append(el('div', { class: 'feed-head' }, el('a', { href: nbHref(nb.folder) }, `${nb.icon} ${nb.title}`), el('span', { class: 'n' }, nb.kind === 'journal' ? `${g.items.reduce((n, i) => n + (i.entries || 1), 0)} 条` : `${g.items.length} 条`)));
+  // unread first inside a notebook's group, so the new ones are not buried under what you have seen
+  if (nb.kind !== 'journal') g.items = [...g.items.filter((i) => isNew(i.path)), ...g.items.filter((i) => !isNew(i.path))];
   for (const it of g.items) {
-    if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
-    else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
+    if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', 'data-new': newAttr(it.path), onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
+    else box.append(el('div', { class: 'feed-item', 'data-new': newAttr(it.path), onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
       el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, cleanExcerpt(it.excerpt, 120))),
       el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 2).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
   }
@@ -398,7 +471,7 @@ function noteTable(notes, { showFolder = true, extraProps = [] } = {}) {
     const t = el('table');
     t.append(el('thead', {}, el('tr', {}, cols.map((c) => el('th', { class: 'sortable', onclick: () => { if (sortKey === c.k) dir = -dir; else { sortKey = c.k; dir = 1; } draw(); } }, c.label + (sortKey === c.k ? (dir > 0 ? ' ↑' : ' ↓') : ''))))));
     const tb = el('tbody');
-    for (const n of sorted) tb.append(el('tr', { onclick: () => openPeek(n.path) }, cols.map((c) => c.render(n))));
+    for (const n of sorted) tb.append(el('tr', { 'data-new': newAttr(n.path), onclick: () => openPeek(n.path) }, cols.map((c) => c.render(n))));
     t.append(tb);
     wrap.innerHTML = ''; wrap.append(t);
   };
@@ -421,6 +494,8 @@ async function viewFolder(main, folder) {
 async function viewNotebook(main, folder) {
   const dateFilter = state.nbDate?.[folder] ?? '';
   const [nb, mx] = await Promise.all([get(`/api/notebooks/${encPath(folder)}${dateFilter ? `?date=${dateFilter}` : ''}`), get(`/api/metrics/${encPath(folder)}`).catch(() => null)]);
+  if (!state.background) seenNotebook(folder);
+  const fresh = nb.notes.filter((n) => isNew(n.path)).length;
   const hasChart = nb.kind === 'journal' || !!mx?.keys?.length;
   const defaultView = nb.kind === 'board' ? 'kanban' : nb.kind === 'journal' ? 'timeline' : 'table';
   let view = localStorage.getItem('view:' + folder) || defaultView;
@@ -428,7 +503,7 @@ async function viewNotebook(main, folder) {
   const page = el('div', { class: 'page wide' });
   page.append(el('div', { class: 'nb-head' }, el('span', { class: 'page-icon' }, nb.icon),
     el('div', { style: 'min-width:0' }, el('h1', { class: 'page-title' }, nb.title),
-      el('div', { class: 'nb-meta' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词 ' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`))));
+      el('div', { class: 'nb-meta' }, `${KIND_LABEL[nb.kind]} · ${nb.total} 条${nb.keywords?.length ? ' · 关键词 ' + nb.keywords.slice(0, 8).join('、') + (nb.keywords.length > 8 ? '…' : '') : ''}`, fresh ? el('span', { class: 'new-text' }, ` · ${fresh} 条新`) : null))));
   if (nb.description) page.append(el('p', { class: 'standfirst' }, nb.description));
 
   const setDate = (d) => { state.nbDate = { ...(state.nbDate || {}), [folder]: d }; route(); };
@@ -451,7 +526,7 @@ async function viewNotebook(main, folder) {
   if (!nb.inbox) page.append(captureBox({ notebook: folder }));
 
   if (nb.inbox) {
-    for (const n of nb.notes) page.append(el('div', { class: 'inbox-item' }, el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtTime(n.created)), n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, cleanExcerpt(n.excerpt, 160)), assignChips(n)));
+    for (const n of nb.notes) page.append(el('div', { class: 'inbox-item', 'data-new': newAttr(n.path) }, el('span', { class: 't', onclick: () => openPeek(n.path) }, n.title), chipSource(n.source), el('span', { class: 'muted', style: 'font-size:11px' }, fmtTime(n.created)), n.excerpt && n.excerpt !== n.title && el('div', { class: 'ex' }, cleanExcerpt(n.excerpt, 160)), assignChips(n)));
     if (!nb.notes.length) page.append(el('div', { class: 'empty' }, '收件箱是空的 🎉'));
   } else if (view === 'kanban') {
     page.append(await kanban(folder, dateFilter));
@@ -474,8 +549,8 @@ function timeline(nb) {
   for (const [d, items] of [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0]))) {
     box.append(el('div', { class: 'timeline-date' }, d === today() ? `今天 · ${d}` : d));
     for (const it of items) {
-      if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
-      else box.append(el('div', { class: 'feed-item', onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
+      if (nb.kind === 'journal') box.append(clampEntries(el('div', { class: 'journal-day', 'data-new': newAttr(it.path), onclick: (e) => { if (!e.target.closest('a,button')) openPeek(it.path); } }, el('div', { class: 'md', html: renderMd(it.body, { journal: true }) }))));
+      else box.append(el('div', { class: 'feed-item', 'data-new': newAttr(it.path), onclick: () => openPeek(it.path) }, el('span', { class: 'dot' }),
         el('div', {}, el('div', { class: 't' }, it.title), it.excerpt && it.excerpt !== it.title && el('div', { class: 'ex' }, cleanExcerpt(it.excerpt, 140))),
         el('div', { class: 'meta' }, it.status && el('span', { class: 'chip status' }, it.status), it.tags.slice(0, 3).map((t) => el('span', { class: 'chip' }, t)), chipSource(it.source), el('span', {}, fmtClock(it.updated)))));
     }
@@ -677,7 +752,7 @@ async function kanban(folder, dateFilter) {
   return kb;
 }
 function cardEl(card) {
-  const c = el('div', { class: 'card', draggable: 'true', onclick: () => openPeek(card.path) },
+  const c = el('div', { class: 'card', draggable: 'true', 'data-new': newAttr(card.path), onclick: () => openPeek(card.path) },
     el('div', { class: 't' }, card.title), card.excerpt && card.excerpt !== card.title && el('div', { class: 'ex' }, cleanExcerpt(card.excerpt, 200)),
     el('div', { class: 'meta' }, card.tags.slice(0, 4).map((t) => el('span', { class: 'chip' }, t)), chipSource(card.source), el('span', { class: 'date' }, card.date)));
   c.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.path); c.classList.add('dragging'); });
@@ -688,6 +763,7 @@ function cardEl(card) {
 // ---------------------------------------------------------------- note editor (full page & peek)
 async function viewNote(main, path) {
   const note = await get(notePath(path));
+  if (!state.background) seenNote(note.path);
   const crumbs = [{ label: '今天', href: '#/' }];
   if (note.notebook) crumbs.push({ label: note.notebook.title, href: nbHref(note.notebook.folder) });
   else if (note.folder) crumbs.push({ label: note.folder, href: `#/folder/${encodeURIComponent(note.folder)}` });
@@ -831,6 +907,7 @@ async function openPeek(path) {
   peek.innerHTML = ''; peek.classList.remove('hidden');
   try {
     const note = await get(notePath(path));
+    seenNote(note.path);
     peek.append(el('div', { class: 'peek-bar' },
       el('button', { class: 'btn small', onclick: () => { location.hash = `#/note/${encodeURIComponent(path)}`; closePeek(); } }, '⤢ 全页打开'),
       moveSelect(note), el('div', { class: 'spacer' }),
@@ -1469,7 +1546,8 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('hashchange', () => { closePeek(); document.body.classList.remove('drawer-open'); route(); });
 document.addEventListener('click', (e) => { if (document.body.classList.contains('drawer-open') && !e.target.closest('#sidebar') && !e.target.closest('.menu-btn')) document.body.classList.remove('drawer-open'); });
-loadSidebar().then(route).catch(() => {}); // a 401 here already opened the login screen
+// remember the change counter before the first render, so a write that lands in the first 15 seconds is not missed by the poll below
+get('/api/version').then((r) => { state.version = r.v; }).catch(() => {}).then(loadSidebar).then(route).catch(() => {}); // a 401 here already opened the login screen
 // Light auto-refresh so agent writes show up while you read: ask the server for its change counter and
 // re-render (in place) only when it moved; never while you are typing, peeking or in a dialog.
 async function refreshIfChanged() {

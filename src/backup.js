@@ -26,7 +26,7 @@ export class Backup {
 
   ensureGitignore() {
     const p = path.join(this.root, '.gitignore');
-    const wanted = ['.notebook/config.json', '.trash/', '.DS_Store'];
+    const wanted = ['.notebook/config.json', '.notebook/seen.json', '.trash/', '.DS_Store'];
     const existing = fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n') : [];
     const missing = wanted.filter((w) => !existing.includes(w));
     if (missing.length) fs.writeFileSync(p, [...existing.filter(Boolean), ...missing].join('\n') + '\n');
