@@ -346,6 +346,7 @@ export function createApp({ vault, auth, backup }) {
     req.audit('revoke_token', req.params.name);
     res.json({ ok: true });
   });
+  api.get('/backup/health', guard('read'), (req, res) => res.json(backup.health()));
   api.post('/backup/run', guard('admin'), async (req, res) => res.json(await backup.run('manual')));
   api.post('/backup/config', guard('admin'), async (req, res) => {
     const { remote, enabled, intervalMinutes } = req.body;

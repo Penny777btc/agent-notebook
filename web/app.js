@@ -296,6 +296,14 @@ async function viewHome(main) {
   page.append(el('h1', { class: 'page-title' }, '今天'));
   page.append(captureBox());
 
+  // backup banner: stays until backups work again
+  try {
+    const bh = await get('/api/backup/health');
+    if (bh.enabled && bh.failing) page.append(el('div', { class: 'card-box banner warn' }, el('span', { style: 'font-size:20px' }, '⚠️'),
+      el('a', { href: '#/settings', style: 'flex:1;min-width:0' }, el('div', { style: 'font-weight:600' }, `备份已连续失败 ${bh.failures} 次`),
+        el('div', { class: 'muted', style: 'font-size:13px' }, (bh.lastSuccess ? `上次成功 ${fmtTime(bh.lastSuccess)}` : '本次启动后还没有成功过') + ' · 新内容目前只存在这台机器上 · 点击查看原因'))));
+  } catch {}
+
   // agents banner
   try {
     const ag = await get('/api/agents');
@@ -1036,7 +1044,10 @@ async function viewSettings(main) {
     el('div', { class: 'k' }, 'Git 仓库'), el('div', {}, bk.isRepo ? el('span', { class: 'ok' }, `已初始化（分支 ${bk.branch}）`) : el('span', { class: 'muted' }, '未初始化，保存设置时会自动 git init')),
     el('div', { class: 'k' }, '待提交'), el('div', {}, bk.dirty == null ? '—' : `${bk.dirty} 个文件`),
     el('div', { class: 'k' }, '最近提交'), el('div', {}, bk.lastCommit || '—'),
-    el('div', { class: 'k' }, '最近备份'), el('div', {}, bk.lastRun ? `${fmtTime(bk.lastRun)} ${bk.lastResult ? `(提交 ${bk.lastResult.committed ? '✓' : '无变更'}，推送 ${bk.lastResult.pushed ? '✓' : '—'})` : ''}` : '本次运行尚未备份'),
+    bk.remote && el('div', { class: 'k' }, '未推送'), bk.remote && el('div', {}, bk.ahead == null ? '—' : bk.ahead ? el('span', { class: 'err' }, `${bk.ahead} 个提交还没到远端`) : el('span', { class: 'ok' }, '已全部推送')),
+    el('div', { class: 'k' }, '最近备份'), el('div', {}, !bk.lastRun ? '本次运行尚未备份'
+      : bk.lastError ? el('span', { class: 'err' }, `${fmtTime(bk.lastRun)} 失败（连续 ${bk.failures} 次）` + (bk.lastSuccess ? `，上次成功 ${fmtTime(bk.lastSuccess)}` : ''))
+      : `${fmtTime(bk.lastRun)} ${bk.lastResult ? `(提交 ${bk.lastResult.committed ? '✓' : '无变更'}，推送 ${bk.lastResult.pushed ? '✓' : '—'}${bk.lastResult.merged ? '，已先合并远端的改动' : ''})` : ''}`),
     bk.lastError && el('div', { class: 'k' }, '错误'), bk.lastError && el('div', { class: 'err', style: 'font-family:var(--mono);font-size:12px' }, bk.lastError));
   page.append(el('div', { class: 'card-box' }, el('div', { class: 'form' },
     el('label', {}, '远端仓库'), remote,
