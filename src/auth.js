@@ -4,6 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const SCOPES = ['read', 'write', 'admin'];
+// "Last used" is informational: refreshing it on disk at most this often keeps config.json from being rewritten on every request.
+const LAST_USED_GRANULARITY_MS = 5 * 60 * 1000;
 
 export class AuthError extends Error {
   constructor(message, status = 403) {
@@ -29,7 +31,7 @@ export class Auth {
       backup: { enabled: false, intervalMinutes: 30, remote: '' }
     };
     if (!fs.existsSync(this.configPath)) {
-      fs.writeFileSync(this.configPath, JSON.stringify(defaults, null, 2));
+      this.write(defaults);
       return defaults;
     }
     return { ...defaults, ...JSON.parse(fs.readFileSync(this.configPath, 'utf8')) };
@@ -40,11 +42,32 @@ export class Auth {
     return this.load();
   }
 
+  /**
+   * Replace config.json atomically: write a sibling temp file, flush it, then rename over the original.
+   * A crash or full disk mid-write leaves the old file intact instead of a truncated one (which would lose every token and the password).
+   */
+  write(cfg) {
+    const tmp = `${this.configPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    let mode = 0o600; // holds token hashes, the password hash and AI settings
+    try { mode = fs.statSync(this.configPath).mode & 0o777; } catch {}
+    const fd = fs.openSync(tmp, 'w', mode);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(cfg, null, 2));
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fs.renameSync(tmp, this.configPath);
+    } catch (err) {
+      try { fs.closeSync(fd); } catch {}
+      try { fs.unlinkSync(tmp); } catch {}
+      throw err;
+    }
+  }
+
   /** load → mutate → write. Every write goes through here so no process can clobber another's changes. */
   update(mutate) {
     const cfg = this.load();
     mutate(cfg);
-    fs.writeFileSync(this.configPath, JSON.stringify(cfg, null, 2));
+    this.write(cfg);
     return cfg;
   }
 
@@ -92,7 +115,9 @@ export class Auth {
     const h = Auth.hash(token);
     const t = this.config.tokens.find((x) => x.hash === h);
     if (!t) return null;
-    this.update((cfg) => { const x = cfg.tokens.find((y) => y.hash === h); if (x) x.lastUsed = new Date().toISOString(); });
+    if (!t.lastUsed || Date.now() - Date.parse(t.lastUsed) > LAST_USED_GRANULARITY_MS) {
+      this.update((cfg) => { const x = cfg.tokens.find((y) => y.hash === h); if (x) x.lastUsed = new Date().toISOString(); });
+    }
     return { name: t.name, scopes: t.scopes, folders: t.folders, kind: 'token' };
   }
 

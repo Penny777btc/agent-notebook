@@ -18,7 +18,25 @@ const CLIENT_NAMES = {
   'chatgpt': 'ChatGPT', 'openai-mcp': 'ChatGPT', 'hermes': 'Hermes', 'grok': 'Grok', 'muse': 'Muse', 'cue': 'Cue'
 };
 
-const clean = (s) => String(s || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+// NFKC folds look-alike forms into the plain one ("𝕏" → "X", full-width letters → ASCII) so one agent does not show up under several labels.
+// Truncate by code point so a 40-character cut can never split an emoji in half.
+const clean = (s) => [...String(s || '').normalize('NFKC').trim().replace(/\s+/g, ' ')].slice(0, 40).join('');
+
+/**
+ * HTTP header values reach Node as latin1, so a UTF-8 name such as "热门搜索" arrives as "ç\x83\xadé\x97¨…".
+ * Re-read the bytes as UTF-8 when they form valid UTF-8 (plain ASCII is unaffected, genuine latin1 text is left alone),
+ * and accept percent-encoding for clients that cannot put non-ASCII in a header at all (browsers' fetch refuses to).
+ */
+export function decodeHeader(value) {
+  let s = String(value || '');
+  if (!s) return '';
+  if (/[\x80-\xff]/.test(s) && !/[^\x00-\xff]/.test(s)) {
+    const utf8 = Buffer.from(s, 'latin1').toString('utf8');
+    if (!utf8.includes('\ufffd')) s = utf8;
+  }
+  if (/%[0-9a-f]{2}/i.test(s)) { try { s = decodeURIComponent(s); } catch {} }
+  return s;
+}
 
 /** Known agent names that a token list contributes (so a UA mentioning "cue" maps to the owner's "cue" token name). */
 export function agentFromUserAgent(ua, knownNames = []) {
@@ -52,7 +70,7 @@ export function resolveSource({ explicit, header, clientInfo, userAgent, princip
   const token = principal?.name || '';
   const ex = clean(explicit);
   if (ex && ex.toLowerCase() !== token.toLowerCase()) return ex; // the agent said who it is
-  const h = clean(header);
+  const h = clean(decodeHeader(header));
   if (h) return h;
   const c = agentFromClientInfo(clientInfo);
   if (c) return c;

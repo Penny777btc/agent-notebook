@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/cli.js serve",
     "mcp": "node src/cli.js mcp",
-    "token": "node src/cli.js token"
+    "token": "node src/cli.js token",
+    "test": "node scripts/smoke-auth.mjs && node scripts/smoke-backup.mjs && node scripts/smoke-sanitize.mjs"
   },
   "engines": {
     "node": ">=18"
