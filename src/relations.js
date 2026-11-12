@@ -4,7 +4,7 @@
 // "related" edges next to the solid [[link]] edges.
 import crypto from 'node:crypto';
 import { tokenCounts } from './content.js';
-import { complete, aiSettings, isChatter, NOT_A_TASK } from './enrich.js';
+import { complete, aiSettings, isChatter, clipSummary, NOT_A_TASK, AFTER_RECORD } from './enrich.js';
 
 const ENTITY_RE = /\$?[A-Z][A-Z0-9]{2,9}\b|@[A-Za-z0-9_]{2,}|\b0x[a-fA-F0-9]{6,}/g;
 const ENTITY_STOP = new Set(['HTTP', 'HTTPS', 'JSON', 'API', 'URL', 'MCP', 'GET', 'POST', 'PATCH', 'DELETE', 'TODO', 'README', 'UTC', 'JST', 'AM', 'PM', 'OK', 'AI', 'LLM', 'PDF', 'CSV', 'PNG', 'JPG', 'HTML', 'CSS', 'RSS', 'HN', 'HF', 'IPO', 'CEO', 'CTO', 'USD', 'CNY', 'JPY', 'USDT', 'USDC', 'ETH', 'BTC', 'BNB', 'SOL']);
@@ -116,17 +116,23 @@ ${NOT_A_TASK}
 export async function extractConcepts(auth, { title, text }, { log } = {}) {
   if (!aiSettings(auth).enabled) return null;
   const started = Date.now();
+  const record = `标题：${title || ''}\n\n<record>\n${String(text || '').slice(0, 5000)}\n</record>\n\n${AFTER_RECORD}`;
+  const schema = { type: 'object', properties: { concepts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } }, required: ['concepts', 'summary'] };
   try {
-    const res = await complete(auth, { system: CONCEPT_SYSTEM, user: `标题：${title || ''}\n\n<record>\n${String(text || '').slice(0, 5000)}\n</record>`, maxTokens: 400, schema: { type: 'object', properties: { concepts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } }, required: ['concepts', 'summary'] } });
-    const m = String(res.text || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').match(/\{[\s\S]*\}/);
-    const parsed = m ? JSON.parse(m[0]) : null;
-    if (!parsed || !Array.isArray(parsed.concepts)) { log?.({ event: 'ai:concepts:unparsable', sample: String(res.text || '').slice(0, 120) }); return null; }
-    const concepts = [...new Set(parsed.concepts.map((c) => String(c).trim()).filter((c) => c && c.length <= 24))].slice(0, 8);
-    const out = { concepts, summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 80) : '', model: res.model, ms: Date.now() - started };
-    // the model described its own actions instead of the note: keep nothing, the note stays pending for the next pass
-    if (isChatter(out.summary, `${title}\n${text}`)) { log?.({ event: 'ai:chatter', stage: 'concepts', sample: out.summary.slice(0, 80) }); return null; }
-    log?.({ event: 'ai:concepts', model: res.model, ms: out.ms, n: concepts.length });
-    return out;
+    // a note that reads like an instruction ("把这些记到笔记本") tempts an agent CLI into narrating what it would do; say so and ask once more
+    for (let attempt = 1, user = record; attempt <= 2; attempt++) {
+      const res = await complete(auth, { system: CONCEPT_SYSTEM, user, maxTokens: 400, schema });
+      const m = String(res.text || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').match(/\{[\s\S]*\}/);
+      let parsed = null;
+      try { parsed = m ? JSON.parse(m[0]) : null; } catch { /* handled below */ }
+      if (!parsed || !Array.isArray(parsed.concepts)) { log?.({ event: 'ai:concepts:unparsable', sample: String(res.text || '').slice(0, 120) }); return null; }
+      const concepts = [...new Set(parsed.concepts.map((c) => String(c).trim()).filter((c) => c && c.length <= 24))].slice(0, 8);
+      const out = { concepts, summary: typeof parsed.summary === 'string' ? clipSummary(parsed.summary) : '', model: res.model, ms: Date.now() - started };
+      if (!isChatter(out.summary, `${title}\n${text}`)) { log?.({ event: 'ai:concepts', model: res.model, ms: out.ms, n: concepts.length, attempt }); return out; }
+      log?.({ event: 'ai:chatter', stage: 'concepts', attempt, sample: out.summary.slice(0, 80) });
+      user = `${record}\n\n你上一次的 summary 是「${out.summary.slice(0, 60)}」——这写的是你打算做什么，不是记录的内容，不合格。重新输出 JSON：summary 直接陈述记录里的事实或结论。`;
+    }
+    return null; // twice the model described its own actions: keep nothing, the note stays pending for the next pass
   } catch (err) { log?.({ event: 'ai:error', stage: 'concepts', error: err.message }); return null; }
 }
 

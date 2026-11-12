@@ -9,14 +9,15 @@ import assert from 'node:assert/strict';
 import { Vault, localDate } from '../src/vault.js';
 import { Auth } from '../src/auth.js';
 import { Router, capture } from '../src/notebooks.js';
-import { isChatter, aiSettings } from '../src/enrich.js';
+import { isChatter, clipSummary, aiSettings } from '../src/enrich.js';
+import { extractConcepts } from '../src/relations.js';
 import { REVIEW_FOLDER, weekOf, addDays, reviewFacts, writeReview, listReviews, splitReview, autoReview, ensureReviewNotebook } from '../src/review.js';
 import { timeWindow, retrieve, ask } from '../src/ask.js';
 import { createApp } from '../src/web-server.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'anb-review-'));
 const NARRATIVE = ['## 这周你在关注什么', '你在看 agent 的记忆设计，见 [[Agent memory design]] 和 [[No such page]]。', '## 你自己的数据', '睡眠平均 6.5 小时。', '## 处理了什么，积压了什么', '待选里有 2 条。', '## 值得跟进的 3 件事', '1. 写完 [[Fresh draft]]。', '## 记录缺口', '周三没有健康记录。'].join('\n\n');
-let server, fake, mode = 'ok', calls = 0;
+let server, fake, mode = 'ok', calls = 0, conceptCalls = 0, lastUser = '';
 try {
   // a stand-in model: answers by what the system prompt asks for
   fake = http.createServer((req, res) => {
@@ -24,10 +25,14 @@ try {
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
       calls++;
-      const { system = '' } = JSON.parse(raw || '{}');
+      const { system = '', messages = [] } = JSON.parse(raw || '{}');
+      lastUser = String(messages[0]?.content || '');
       if (mode === 'down') { res.writeHead(500, { 'Content-Type': 'application/json' }).end('{"type":"error","error":{"type":"api_error","message":"boom"}}'); return; }
       const text = /每周回顾助手/.test(system) ? (mode === 'chatter' ? '我先查看一下笔记本里的可用接口，然后把回顾写入。' : `好的，下面是回顾：\n\n${NARRATIVE}`)
-        : /问答助手/.test(system) ? '这周你在看 agent 的记忆设计 [1]，另外睡眠偏少 [2, 9]。' : '{}';
+        : /问答助手/.test(system) ? '这周你在看 agent 的记忆设计 [1]，另外睡眠偏少 [2, 9]。'
+        : /知识图谱助手/.test(system) ? (mode === 'self-talk' || (mode === 'self-talk-once' && ++conceptCalls === 1)
+          ? '{"concepts":["笔记工具"],"summary":"先看参考帖和笔记工具，确认这条口播要写什么。"}'
+          : '{"concepts":["组件库","缝合怪"],"summary":"收藏很多组件库却做出缝合怪，是因为一次混用了太多套设计语言。"}') : '{}';
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'fake-model', content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 20 } }));
     });
   }).listen(0, '127.0.0.1');
@@ -46,6 +51,9 @@ try {
   assert.ok(!isChatter('作者认为摆脱上瘾要靠更大的正反馈，而不是自律。'));
   assert.ok(!isChatter('正在上涨的三只代币及其成交量对比。'), 'a summary may start with 正在 when it is about the note');
   assert.ok(!isChatter('agent-notebook 的 MCP 接口新增了周回顾工具', '给 agent-notebook 加一个 notebook_review 工具'), 'a note about the notebook may name it');
+  assert.equal(clipSummary('短摘要。'), '短摘要。');
+  assert.equal(clipSummary('甲'.repeat(50) + '。' + '乙'.repeat(60)), '甲'.repeat(50) + '。', 'a long summary ends at a sentence, not mid-word');
+  assert.equal(clipSummary('丙'.repeat(120)), '丙'.repeat(79) + '…');
   console.log('ok 1  summaries that narrate the model\'s own actions are recognised, real ones are not');
 
   // 2. weeks
@@ -128,6 +136,15 @@ try {
   parts = splitReview(page.body);
   assert.ok(parts.narrative.startsWith('## 这周你在关注什么') && /文字是 2026-11-12 写的/.test(parts.head), 'a failed rewrite keeps the earlier words and says how old they are');
   assert.deepEqual([page.properties.through, page.properties.narrative_through, page.properties.ai_model], ['2026-11-13', '2026-11-12', 'fake-model']);
+  // a note that reads like an instruction: the model narrates once, is told so, and the second answer is kept
+  const events = [];
+  mode = 'self-talk-once';
+  const second = await extractConcepts(auth, { title: '收藏了 5 个组件库', text: '帮我按参考帖写一条小红书口播：为什么组件库一用就成缝合怪。' }, { log: (e) => events.push(e) });
+  assert.deepEqual([second.concepts, /缝合怪/.test(second.summary), conceptCalls], [['组件库', '缝合怪'], true, 2]);
+  assert.ok(/不合格/.test(lastUser) && /不需要你保存/.test(lastUser), 'the retry says what was wrong, after the record');
+  assert.deepEqual(events.map((e) => e.event), ['ai:chatter', 'ai:concepts']);
+  mode = 'self-talk';
+  assert.equal(await extractConcepts(auth, { title: 'x', text: '帮我按参考帖写一条小红书口播。' }), null, 'twice self-talk: nothing is stored');
   mode = 'ok';
   console.log('ok 6  with AI on the page leads with the narrative; self-talk is rejected and never replaces a good one');
 
