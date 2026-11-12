@@ -261,6 +261,8 @@ const REVIEW_SYSTEM = `你是这本私人笔记本主人的每周回顾助手。
 ## ${SECTIONS[4]}
 （哪些笔记本这周是空的或断档，补上哪一种记录最有价值，一两句。）`;
 
+const REVIEW_NOW = `以上 <facts> 就是全部材料。现在直接写出这份回顾的全文：回答的第一行就是「## ${SECTIONS[0]}」，前面不要有任何话。你没有工具，也不需要查找、核对或保存任何东西——你输出的文字会被程序原样存进笔记本。`;
+
 /** Keep only the five sections; [[links]] that do not resolve become plain quoted titles. Null when the answer is not a review. */
 export function cleanNarrative(vault, text) {
   let t = String(text || '').replace(/^```(?:markdown|md)?\s*/i, '').replace(/```\s*$/, '');
@@ -306,14 +308,19 @@ export async function writeReview(vault, auth, { from, to, log, now = new Date()
   let narrative = null, model = null, error = null;
   if (s.enabled) {
     try {
-      const res = await complete(auth, { system: REVIEW_SYSTEM, user: `<facts>\n${factsForPrompt(facts)}\n</facts>`, maxTokens: 2400, timeout: 180000 });
-      if (res.refusal) error = 'AI 拒绝了这次请求';
-      else {
-        narrative = cleanNarrative(vault, res.text);
+      // an agent CLI tends to answer with what it is about to do ("我先看笔记本里怎么写周报"): the request is repeated after
+      // the facts, where it weighs most, and an answer that is not a review is quoted back once
+      const material = `<facts>\n${factsForPrompt(facts)}\n</facts>\n\n${REVIEW_NOW}`;
+      for (let attempt = 1, user = material; attempt <= 2 && !narrative; attempt++) {
+        const res = await complete(auth, { system: REVIEW_SYSTEM, user, maxTokens: 2400, timeout: 180000 });
         model = res.model || null;
-        if (!narrative) { error = 'AI 的回答不是一份回顾'; log?.({ event: 'ai:chatter', stage: 'review', sample: String(res.text || '').slice(0, 80) }); }
+        if (res.refusal) { error = 'AI 拒绝了这次请求'; break; }
+        narrative = cleanNarrative(vault, res.text);
+        error = narrative ? null : 'AI 的回答不是一份回顾';
+        if (!narrative) log?.({ event: 'ai:chatter', stage: 'review', attempt, sample: String(res.text || '').slice(0, 80) });
+        log?.({ event: 'ai:review', provider: s.provider, model, ms: Date.now() - started, ok: !!narrative, attempt, usage: res.usage });
+        user = `${material}\n\n你上一次的回答是「${String(res.text || '').trim().slice(0, 80)}」——这只是在说你打算做什么，没有写出回顾。不要再描述步骤，这一次的回答必须就是回顾全文。`;
       }
-      log?.({ event: 'ai:review', provider: s.provider, model, ms: Date.now() - started, ok: !!narrative, usage: res.usage });
     } catch (err) { error = err.message; log?.({ event: 'ai:error', stage: 'review', error: err.message }); }
   }
   const existing = listReviews(vault).find((r) => r.from === p.from);
