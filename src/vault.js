@@ -163,9 +163,11 @@ export class Vault {
     return this.getNote(rel);
   }
 
-  updateNote(rel, { title, body, append, properties = {} } = {}) {
+  /** `touch: false` is for machine-written metadata (AI concepts, a summary): the record itself did not change,
+   *  so it must not come back as unread or show up under the day the metadata was written. */
+  updateNote(rel, { title, body, append, properties = {}, touch = true } = {}) {
     const note = this.getNote(rel);
-    const data = { ...note.properties, ...stripUndefined(properties), updated: nowIso() };
+    const data = { ...note.properties, ...stripUndefined(properties), ...(touch ? { updated: nowIso() } : {}) };
     if (title) data.title = title;
     if (data.tags && !Array.isArray(data.tags)) data.tags = String(data.tags).split(',').map((s) => s.trim()).filter(Boolean);
     for (const k of Object.keys(data)) if (data[k] === null) delete data[k];

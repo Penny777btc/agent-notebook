@@ -165,7 +165,7 @@ export async function conceptsBatch(vault, auth, { limit = 5, paths, log } = {})
     const props = { concepts: r.concepts, concepts_hash: bodyHash(n.body) };
     const current = vault.getNote(n.path).properties || {};
     if (r.summary && !current.summary) props.summary = r.summary;
-    vault.updateNote(n.path, { properties: props });
+    vault.updateNote(n.path, { properties: props, touch: false });
     done.push({ path: n.path, concepts: r.concepts });
   }
   invalidateRelations();

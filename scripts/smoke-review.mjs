@@ -10,7 +10,7 @@ import { Vault, localDate } from '../src/vault.js';
 import { Auth } from '../src/auth.js';
 import { Router, capture } from '../src/notebooks.js';
 import { isChatter, clipSummary, aiSettings, complete } from '../src/enrich.js';
-import { extractConcepts } from '../src/relations.js';
+import { extractConcepts, conceptsBatch } from '../src/relations.js';
 import { REVIEW_FOLDER, weekOf, addDays, reviewFacts, writeReview, listReviews, splitReview, autoReview, ensureReviewNotebook } from '../src/review.js';
 import { timeWindow, retrieve, ask } from '../src/ask.js';
 import { createApp } from '../src/web-server.js';
@@ -179,6 +179,12 @@ try {
   mode = 'self-talk';
   assert.equal(await extractConcepts(auth, { title: 'x', text: '帮我按参考帖写一条小红书口播。' }), null, 'twice self-talk: nothing is stored');
   mode = 'ok';
+  // concepts are machine-written metadata: an old record must not come back as today's, or as changed
+  const oldNote = vault.createNote({ folder: 'Reading', title: '组件库缝合怪', body: '收藏了 5 个组件库，一用就成缝合怪，因为混用了太多套设计语言。' });
+  fs.writeFileSync(path.join(tmp, oldNote.path), fs.readFileSync(path.join(tmp, oldNote.path), 'utf8').replace(/^updated: .*$/m, "updated: '2026-11-01T15:35:35.466Z'"));
+  const batch = await conceptsBatch(vault, auth, { paths: [oldNote.path] });
+  const after = vault.getNote(oldNote.path).properties;
+  assert.deepEqual([batch.done.length, after.concepts, new Date(after.updated).toISOString()], [1, ['组件库', '缝合怪'], '2026-11-01T15:35:35.466Z'], 'concepts are stored and `updated` stays');
   console.log('ok 6  with AI on the page leads with the narrative; self-talk is rejected and never replaces a good one');
 
   // 7. the scheduler writes last week's review once it is over, and stops retrying
