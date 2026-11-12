@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { Vault, localDate } from '../src/vault.js';
 import { Auth } from '../src/auth.js';
 import { Router, capture } from '../src/notebooks.js';
-import { isChatter, clipSummary, aiSettings } from '../src/enrich.js';
+import { isChatter, clipSummary, aiSettings, complete } from '../src/enrich.js';
 import { extractConcepts } from '../src/relations.js';
 import { REVIEW_FOLDER, weekOf, addDays, reviewFacts, writeReview, listReviews, splitReview, autoReview, ensureReviewNotebook } from '../src/review.js';
 import { timeWindow, retrieve, ask } from '../src/ask.js';
@@ -55,6 +55,39 @@ try {
   assert.equal(clipSummary('甲'.repeat(50) + '。' + '乙'.repeat(60)), '甲'.repeat(50) + '。', 'a long summary ends at a sentence, not mid-word');
   assert.equal(clipSummary('丙'.repeat(120)), '丙'.repeat(79) + '…');
   console.log('ok 1  summaries that narrate the model\'s own actions are recognised, real ones are not');
+
+  // 1b. the grok CLI is a coding agent: it must be started with no tools and no MCP servers, and a turn that ends on a
+  // tool call is an error, not an answer. A stand-in `grok` on PATH records how it was called.
+  {
+    const bin = path.join(tmp, 'fakebin'), home = path.join(tmp, 'fakehome'), out = path.join(tmp, 'grok-call');
+    fs.mkdirSync(bin); fs.mkdirSync(path.join(home, '.grok'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.grok', 'config.toml'), '[cli]\ninstaller = "x"\n\n[mcp_servers.agent-notebook]\ncommand = "node"\n\n[mcp_servers.agent-notebook.env]\nA = "b"\n\n[mcp_servers."other one"]\nurl = "http://x"\n');
+    fs.writeFileSync(path.join(bin, 'grok'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "grok 0.0-test"; exit 0; fi\nprintf "%s\\n" "$@" > "$FAKE_OUT.args"\nprintf "%s" "$GROK_CONFIG" > "$FAKE_OUT.env"\ncat "$FAKE_OUT.reply"\n', { mode: 0o755 });
+    const keep = { PATH: process.env.PATH, HOME: process.env.HOME };
+    Object.assign(process.env, { PATH: `${bin}:${keep.PATH}`, HOME: home, FAKE_OUT: out });
+    try {
+      auth.update((c) => { c.ai = { enabled: true, provider: 'grok-cli', grokModel: 'grok-test' }; });
+      assert.equal(aiSettings(auth).cli.grok.path, path.join(bin, 'grok'));
+      fs.writeFileSync(`${out}.reply`, JSON.stringify({ text: '{"ok":true}', stopReason: 'end_turn', modelUsage: { 'grok-test': {} } }));
+      const res = await complete(auth, { system: 'SYS', user: 'USER' });
+      assert.deepEqual([res.text, res.model], ['{"ok":true}', 'grok-test']);
+      const args = fs.readFileSync(`${out}.args`, 'utf8').trim().split('\n');
+      const after = (flag) => args[args.indexOf(flag) + 1];
+      assert.ok(after('--tools') && after('--disallowed-tools').split(',').includes(after('--tools')), 'the one allowed tool is denied again: an empty --tools removes nothing');
+      assert.ok(['search_tool', 'use_tool'].every((t) => after('--disallowed-tools').split(',').includes(t)) && args.includes('--no-subagents') && args.includes('--disable-web-search'));
+      assert.deepEqual([after('--max-turns'), after('--system-prompt-override'), after('-p')], ['1', 'SYS', 'USER']);
+      const overlay = JSON.parse(fs.readFileSync(`${out}.env`, 'utf8'));
+      assert.deepEqual(overlay.disabled_mcp_servers, ['agent-notebook', 'other one'], 'every MCP server in grok\'s config is switched off for the call');
+      assert.deepEqual([overlay.compat.claude.mcps, overlay.compat.cursor.skills], [false, false]);
+      fs.writeFileSync(`${out}.reply`, JSON.stringify({ text: '我先看 agent-notebook 里该怎么写周报。', stopReason: 'max_turn_requests' }));
+      await assert.rejects(complete(auth, { system: 'SYS', user: 'USER' }), /调用工具/);
+    } finally {
+      Object.assign(process.env, keep); delete process.env.FAKE_OUT;
+      auth.update((c) => { delete c.ai; });
+    }
+    assert.equal(aiSettings(auth).enabled, false);
+  }
+  console.log('ok 1b grok runs with no tools and no MCP servers; a turn that stops on a tool call is an error');
 
   // 2. weeks
   assert.deepEqual(weekOf('2026-11-12'), { from: '2026-11-09', to: '2026-11-15' });

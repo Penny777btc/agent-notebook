@@ -68,15 +68,30 @@ export function aiSettings(auth) {
   return { provider, enabled: !!c.enabled && configured, configured, cli, keyPrefix: c.apiKey ? c.apiKey.slice(0, 10) + '…' : null, hasKey: !!c.apiKey, model: c.model || DEFAULT_MODEL, grokModel: c.grokModel || '', baseUrl: c.baseUrl || null, mode: c.mode || 'unsure' };
 }
 
+// Grok Build is a coding agent: left alone, a "summarise this record" call runs with a shell, file tools and every MCP server
+// in the user's grok config — usually this notebook's own. `--tools ''` names no tool and so removes none; the model then
+// answered "let me look up the notebook tools first" and stopped at the turn limit, or read the record as a job to carry out.
+// An allowlist of one tool that the denylist takes away again leaves no built-in tool, the MCP meta-tools go the same way,
+// and the config overlay keeps MCP servers and other harnesses' skills, rules and hooks from being loaded at all.
+const GROK_NO_TOOLS = ['--tools', 'todo_write', '--disallowed-tools', 'todo_write,search_tool,use_tool', '--no-subagents', '--no-plan'];
+const OFF = { mcps: false, skills: false, rules: false, agents: false, hooks: false };
+export function grokMcpServers(home = path.join(os.homedir(), '.grok')) {
+  try {
+    const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+    return [...new Set([...toml.matchAll(/^[ \t]*\[mcp_servers\.(?:"([^"]+)"|'([^']+)'|([^\].\s]+))\]/gm)].map((m) => m[1] || m[2] || m[3]))];
+  } catch { return []; }
+}
+const grokEnv = () => ({ GROK_CONFIG: JSON.stringify({ disabled_mcp_servers: grokMcpServers(), compat: { claude: OFF, cursor: OFF } }) });
+
 function client(auth) {
   const c = auth.config.ai || {};
   if (!c.apiKey) throw new Error('AI 未配置 API key');
   return new Anthropic({ apiKey: c.apiKey, baseURL: c.baseUrl || process.env.ANTHROPIC_BASE_URL || undefined, timeout: 20000, maxRetries: 1 });
 }
 
-function run(bin, args, { input, timeout = 60000 } = {}) {
+function run(bin, args, { input, timeout = 60000, env } = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile(bin, args, { env: cliEnv(), cwd: os.tmpdir(), timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+    const child = execFile(bin, args, { env: { ...cliEnv(), ...env }, cwd: os.tmpdir(), timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
       if (err && !stdout) return reject(new Error(`${path.basename(bin)} 调用失败：${(stderr || err.message).trim().split('\n').pop().slice(0, 200)}`));
       resolve({ stdout: stdout || '', stderr: stderr || '' });
     });
@@ -99,16 +114,18 @@ export async function complete(auth, { system, user, maxTokens = 800, schema, ti
   }
   if (s.provider === 'grok-cli') {
     if (!s.cli.grok) throw new Error('本机没有找到 grok 命令：先安装 Grok Build 并登录（终端运行 grok）');
-    // headless: no tools, one turn, system prompt via --rules, the user text as the prompt argument
+    // headless: no tools (see GROK_NO_TOOLS), one turn, the user text as the prompt argument
     // our own system prompt replaces the coding-agent one (26k tokens of tools/skills that only confuse a
     // classification job); a JSON schema pins the output shape
-    const args = ['-p', user, '--output-format', 'json', '--tools', '', '--max-turns', '1', '--disable-web-search', '--effort', 'low', '--system-prompt-override', system];
+    const args = ['-p', user, '--output-format', 'json', ...GROK_NO_TOOLS, '--max-turns', '1', '--disable-web-search', '--effort', 'low', '--system-prompt-override', system];
     if (schema) args.push('--json-schema', JSON.stringify(schema));
     if (s.grokModel) args.push('-m', s.grokModel);
-    const { stdout } = await run(s.cli.grok.path, args, { timeout: cliTimeout });
+    const { stdout } = await run(s.cli.grok.path, args, { timeout: cliTimeout, env: grokEnv() });
     const json = parseJson(stdout.slice(stdout.indexOf('{')));
     if (!json) throw new Error('grok 输出无法解析：' + stdout.slice(0, 160));
     if (json.type === 'error' || json.error) throw new Error('grok 返回错误：' + String(json.message || json.error).slice(0, 200));
+    // the turn ended on a tool call: the text is what it meant to do next, not an answer
+    if (json.stopReason === 'max_turn_requests') throw new Error('grok 想去调用工具而不是直接回答：' + String(json.text || '').slice(0, 80));
     const model = Object.keys(json.modelUsage || {})[0] || s.grokModel || 'grok';
     return { text: String(json.text || ''), model, usage: json.usage ? { input: json.usage.input_tokens, output: json.usage.output_tokens } : undefined };
   }
