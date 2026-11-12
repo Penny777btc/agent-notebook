@@ -261,7 +261,12 @@ const REVIEW_SYSTEM = `你是这本私人笔记本主人的每周回顾助手。
 ## ${SECTIONS[4]}
 （哪些笔记本这周是空的或断档，补上哪一种记录最有价值，一两句。）`;
 
-const REVIEW_NOW = `以上 <facts> 就是全部材料。现在直接写出这份回顾的全文：回答的第一行就是「## ${SECTIONS[0]}」，前面不要有任何话。你没有工具，也不需要查找、核对或保存任何东西——你输出的文字会被程序原样存进笔记本。`;
+const REVIEW_NOW = `以上 <facts> 就是全部材料。现在直接写出这份回顾的全文。你没有工具，也不需要查找、核对或保存任何东西——你输出的文字会被程序原样存进笔记本。
+格式必须严格如下，否则会被丢弃：
+- 正好五个二级标题，就是下面这五行，顺序和文字都不改；不要 ### 小标题，不要前言和结语，回答的第一行就是第一个标题。
+- 全文 350 到 600 字。每个小节最多 4 句话或 3 条列表项，只挑最要紧的说，不要罗列条目。
+- [[标题]] 引用全文最多 6 处，其余用文字概括。
+${SECTIONS.map((t) => `## ${t}`).join('\n')}`;
 
 /** Keep only the five sections; [[links]] that do not resolve become plain quoted titles. Null when the answer is not a review. */
 export function cleanNarrative(vault, text) {
@@ -319,7 +324,11 @@ export async function writeReview(vault, auth, { from, to, log, now = new Date()
         error = narrative ? null : 'AI 的回答不是一份回顾';
         if (!narrative) log?.({ event: 'ai:chatter', stage: 'review', attempt, sample: String(res.text || '').slice(0, 80) });
         log?.({ event: 'ai:review', provider: s.provider, model, ms: Date.now() - started, ok: !!narrative, attempt, usage: res.usage });
-        user = `${material}\n\n你上一次的回答是「${String(res.text || '').trim().slice(0, 80)}」——这只是在说你打算做什么，没有写出回顾。不要再描述步骤，这一次的回答必须就是回顾全文。`;
+        const got = String(res.text || '').trim();
+        const missing = SECTIONS.filter((t) => !got.includes(`## ${t}`));
+        user = /^##\s/m.test(got)
+          ? `${material}\n\n你上一次写了 ${got.length} 个字，但没有按格式来：缺少小节「${missing.join('」「')}」。重写一遍，严格只用那五个二级标题，全文不超过 600 字。`
+          : `${material}\n\n你上一次的回答是「${got.slice(0, 80)}」——这只是在说你打算做什么，没有写出回顾。不要再描述步骤，这一次的回答必须就是回顾全文。`;
       }
     } catch (err) { error = err.message; log?.({ event: 'ai:error', stage: 'review', error: err.message }); }
   }
