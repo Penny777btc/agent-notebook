@@ -154,7 +154,7 @@ export async function ask(vault, auth, question, { can, log, now = new Date() } 
   try {
     // the question again after the notes, and the reminder that there is nothing to look up: an agent CLI otherwise
     // replies with its plan ("我先查一下笔记本") instead of the answer; such a reply is quoted back once
-    const material = `问题：${q}\n\n<notes>\n${blocks.join('\n\n')}\n</notes>\n\n以上 <notes> 就是能查到的全部记录，你没有工具，也不需要再去查找。现在直接回答这个问题：${q}`;
+    const material = `问题：${q}\n\n<notes>\n${blocks.join('\n\n')}\n</notes>\n\n以上 <notes> 就是能查到的全部记录，你没有工具，也不需要再去查找。现在直接回答这个问题：${q}\n要求：先给答案；每个事实后面紧跟出处编号，写成 [2] 或 [1][4]，没有编号的事实不要写；不超过 300 字，不要用标题，可以用简短列表。`;
     let res = await complete(auth, { system: ASK_SYSTEM(localDate(now)), user: material, maxTokens: 1200, timeout: 120000 });
     if (!res.refusal && isPlan(res.text)) {
       log?.({ event: 'ai:chatter', stage: 'ask', sample: String(res.text || '').slice(0, 80) });
