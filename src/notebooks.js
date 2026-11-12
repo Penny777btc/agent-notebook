@@ -79,7 +79,7 @@ export class Router {
     let sims = new Map();
     try { sims = new Map(this.profiles.similar({ title, text }).map((x) => [x.folder, x])); } catch { /* profiles are an optimisation only */ }
     for (const nb of this.vault.listNotebooks()) {
-      if (nb.inbox) continue;
+      if (nb.inbox || nb.auto === false) continue;
       let score = 0;
       const reasons = [];
       // a tag the owner tied to this notebook settles it: it outweighs every learned or guessed signal below
@@ -300,7 +300,7 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
 
 /** What landed in the vault on a given day, grouped by notebook. The owner's morning read. */
 export function digest(vault, date = localDate(new Date())) {
-  const notebooks = vault.listNotebooks();
+  const notebooks = vault.listNotebooks().filter((nb) => nb.auto !== false); // generated pages (the weekly review) are about the day's records, not among them
   const groups = [];
   for (const nb of notebooks) {
     const notes = vault.listNotes({ folder: nb.folder, recursive: false, limit: 500 })

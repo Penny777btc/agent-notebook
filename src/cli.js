@@ -11,6 +11,8 @@ import { Backup } from './backup.js';
 import { buildMcpServer } from './mcp.js';
 import { createApp } from './web-server.js';
 import { listAgents, connectAgent } from './agents.js';
+import { reviewFacts, writeReview, startReviewSchedule, weekOf, addDays } from './review.js';
+import { localDate } from './vault.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -40,6 +42,7 @@ Usage:
   agent-notebook agents                                                      detect local agents (Claude Code, Codex, Grok, Cursor…) and their status
   agent-notebook connect AGENT_ID [--scopes read,write] [--folders ...] [--no-skill]   one-shot: create token + write that agent's MCP config
   agent-notebook backup init [REMOTE_URL] | now | status
+  agent-notebook review  [--last | --from YYYY-MM-DD] [--facts]              write this week's review page (--last: the week before; --facts: print the numbers only)
   agent-notebook init    [--vault DIR]                                       create an empty vault with example boards
 
 Vault directory: --vault, $AGENT_NOTEBOOK_VAULT, ./vault (if exists), else ~/AgentNotebook`;
@@ -63,6 +66,11 @@ async function main() {
       const host = flags.host || auth.config.host || '127.0.0.1';
       const app = createApp({ vault, auth, backup });
       backup.start();
+      // the weekly review of a finished week is written on its own (config.json: "review": { "auto": false } turns that off)
+      startReviewSchedule(vault, auth, {
+        log: (e) => auth.audit({ name: 'ai' }, e.event, '', e),
+        onWritten: (r) => { auth.audit({ name: 'system' }, 'review', r.path, { via: 'schedule', from: r.period.from, to: r.period.through, narrative: r.narrative, ms: r.ms }); console.log(`[agent-notebook] weekly review written: ${r.path}`); }
+      });
       app.listen(port, host, () => {
         console.log(`agent-notebook  vault=${vaultDir}`);
         console.log(`  web UI : http://${host}:${port}/`);
@@ -132,6 +140,15 @@ async function main() {
       console.log(`  config : ${r.configPath}${r.backupPath ? `  (backup: ${r.backupPath})` : ''}`);
       if (r.skillPath) console.log(`  skill  : ${r.skillPath}`);
       if (r.restart) console.log(`  next   : ${r.restart}`);
+      return;
+    }
+    case 'review': {
+      const thisWeek = weekOf(localDate(new Date()));
+      const period = flags.last ? weekOf(addDays(thisWeek.from, -1)) : flags.from ? { from: String(flags.from), to: flags.to ? String(flags.to) : undefined } : thisWeek;
+      if (flags.facts) return console.log(JSON.stringify(reviewFacts(vault, auth, period), null, 2));
+      const { facts, ...r } = await writeReview(vault, auth, { ...period, log: (e) => auth.audit({ name: 'ai' }, e.event, '', e) });
+      auth.audit({ name: 'system' }, 'review', r.path, { via: 'cli', from: r.period.from, to: r.period.through, narrative: r.narrative, ms: r.ms });
+      console.log(`${r.created ? 'written' : 'updated'}: ${r.path}  (${r.narrative ? `narrative by ${r.model}` : `data only${r.error ? ': ' + r.error : ''}`}, ${facts.totals.added} items, ${r.ms} ms)`);
       return;
     }
     case 'backup': {

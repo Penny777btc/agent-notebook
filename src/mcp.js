@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Router, capture, digest } from './notebooks.js';
 import { metrics } from './metrics.js';
 import { resolveSource } from './agent-id.js';
+import { REVIEW_FOLDER, reviewFacts, listReviews } from './review.js';
 
 const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = (err) => ({ isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] });
@@ -85,6 +86,20 @@ export function buildMcpServer({ vault, auth, principal, hints = {} }) {
     const m = metrics(vault, notebook, { key, from, to });
     for (const k of Object.keys(m.series)) if (m.series[k].length > 500) m.series[k] = m.series[k].slice(-500);
     return m;
+  }));
+
+  server.registerTool('notebook_review', {
+    title: 'Weekly review',
+    description: "The owner's week in facts: items added per notebook and per source, what the owner captured themselves, inbox and board backlog (with the oldest waiting cards), journal metrics against the week before, journals that went quiet, most frequent concepts and tags. Also returns the latest AI-written review page. Read-only. Use when the owner asks how their week went or what is piling up, and before deciding what is worth bringing to them next.",
+    inputSchema: {
+      from: z.string().optional().describe('Monday of the week, YYYY-MM-DD. Default: the current week so far'),
+      page: z.boolean().optional().describe('false to leave out the text of the latest review page')
+    },
+    annotations: { readOnlyHint: true }
+  }, guarded('read', null, function review({ from, page }) {
+    const facts = reviewFacts(vault, auth, { from, can: (p) => auth.can(principal, 'read', p), activity: auth.can(principal, 'admin') });
+    const latest = page !== false && auth.can(principal, 'read', REVIEW_FOLDER) ? listReviews(vault)[0] : null;
+    return { facts, latest: latest ? { ...latest, body: vault.getNote(latest.path).body } : null };
   }));
 
   server.registerTool('notebook_move_note', {

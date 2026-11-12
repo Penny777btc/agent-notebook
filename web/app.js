@@ -266,7 +266,7 @@ function parseHash() {
 async function route({ refresh = false } = {}) {
   const r = parseHash();
   if (r.kind === 'board') { location.replace(nbHref(r.arg)); return; }
-  const key = ['settings', 'activity', 'agents', 'graph'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
+  const key = ['settings', 'activity', 'agents', 'graph', 'ask'].includes(r.kind) ? r.kind : r.kind === 'home' ? '' : `${r.kind}:${r.arg}`;
   // same page again (after a save, the poll, a filter or date switch) → swap in place; the graph measures itself while rendering
   const inPlace = (refresh || key === state.routeKey) && key === state.routeKey && r.kind !== 'graph';
   state.route = r;
@@ -286,6 +286,7 @@ async function route({ refresh = false } = {}) {
     else if (r.kind === 'activity') await viewActivity(main);
     else if (r.kind === 'agents') await viewAgents(main);
     else if (r.kind === 'graph') await viewGraph(main, r.arg);
+    else if (r.kind === 'ask') await viewAsk(main);
     else await viewHome(main);
   } catch (err) {
     if (inPlace) return; // a failed background refresh keeps what is on screen
@@ -308,7 +309,7 @@ const chipSource = (s) => s && el('span', { class: 'chip source' }, s);
 // ---------------------------------------------------------------- home: capture + inbox + today's feed
 function captureBox({ notebook } = {}) {
   const ta = el('textarea', { placeholder: notebook ? `记一条到「${nbOf(notebook)?.title}」…` : '记点什么… 会自动归到对应的笔记本（支持 Markdown 和 [[链接]]）', rows: 2 });
-  const sel = el('select', {}, el('option', { value: '' }, '自动归类'), state.notebooks.filter((n) => !n.inbox).map((n) => el('option', { value: n.folder, selected: n.folder === notebook }, `${n.icon} ${n.title}`)));
+  const sel = el('select', {}, el('option', { value: '' }, '自动归类'), state.notebooks.filter((n) => !n.inbox && n.auto !== false).map((n) => el('option', { value: n.folder, selected: n.folder === notebook }, `${n.icon} ${n.title}`)));
   const status = el('span', { class: 'muted', style: 'font-size:12px' });
   const send = async () => {
     const text = ta.value.trim(); if (!text) return;
@@ -346,7 +347,7 @@ function assignChips(note, { onDone } = {}) {
   const suggested = (note.suggested || []).filter((f) => nbOf(f));
   for (const f of suggested) wrap.append(el('span', { class: 'chip btn-chip', onclick: () => move(f) }, `${nbOf(f).icon} ${nbOf(f).title}`));
   const sel = el('select', { onchange: (e) => e.target.value && move(e.target.value) }, el('option', { value: '' }, suggested.length ? '其他…' : '选择笔记本…'),
-    state.notebooks.filter((n) => !n.inbox && !suggested.includes(n.folder)).map((n) => el('option', { value: n.folder }, `${n.icon} ${n.title}`)));
+    state.notebooks.filter((n) => !n.inbox && n.auto !== false && !suggested.includes(n.folder)).map((n) => el('option', { value: n.folder }, `${n.icon} ${n.title}`)));
   wrap.append(sel);
   return wrap;
 }
@@ -399,6 +400,9 @@ async function viewHome(main) {
     }
     page.append(box);
   }
+  const review = await reviewStrip();
+  if (review) page.append(review);
+  page.append(askStrip());
 
   // today's feed with date nav
   const d = state.feedDate;
@@ -420,6 +424,149 @@ async function viewHome(main) {
     el('span', { class: 'emoji' }, nb.icon), el('span', { class: 't' }, nb.title), el('span', { class: 'd' }, KIND_LABEL[nb.kind] + (nb.description ? ' · ' + nb.description.slice(0, 48) : '')), el('span', { class: 'n' }, nb.count ?? nb.total ?? '')));
   page.append(toc);
   main.append(topbar([{ label: '今天' }]), page);
+}
+
+// ---------------------------------------------------------------- weekly review + ask my notes
+const shortDay = (d) => String(d || '').slice(5);
+/** Write (or rewrite) this week's review; the button shows progress wherever the strip is rendered meanwhile. */
+async function generateReview(e) {
+  if (state.reviewBusy) return;
+  const b = e?.currentTarget;
+  if (b) { b.disabled = true; b.textContent = '生成中…约半分钟'; } // at once; the re-render below keeps it that way
+  state.reviewBusy = true; route({ refresh: true });
+  try {
+    const r = await api('POST', '/api/review', { period: 'this' });
+    toast(r.narrative ? '周回顾写好了' : r.error ? `数据已更新，AI 这次没写出来：${r.error}` : '已生成数据回顾（AI 未开启，没有文字部分）', !r.narrative && !!r.error);
+    state.reviewOpen = true;
+    await loadSidebar();
+  } catch (err) { toast(err.message, true); }
+  state.reviewBusy = false; route({ refresh: true });
+}
+/** Home: the latest weekly review, a few lines of it, with the button that writes this week's. */
+async function reviewStrip() {
+  let rv;
+  try { rv = await get('/api/review'); } catch { return null; } // a token without access to the reviews simply has no strip
+  const latest = rv.latest;
+  const current = latest && latest.from === rv.thisWeek.from;
+  const busy = !!state.reviewBusy;
+  const gen = el('button', { class: 'btn small' + (current ? '' : ' primary'), disabled: busy, onclick: generateReview,
+    title: rv.aiEnabled ? '根据这周到今天为止的记录重新写一遍' : 'AI 未开启：只会生成数据部分' }, busy ? '生成中…约半分钟' : current ? '更新' : '生成本周回顾');
+  const box = el('div', { class: 'strip review' });
+  if (!latest) {
+    box.append(el('div', { class: 'strip-row' }, el('span', { class: 'strip-title' }, '🪞 周回顾'),
+      el('span', { class: 'muted review-when' }, '每周一份：这周在关注什么、你自己的数据、积压了什么、该跟进哪几件事'), el('div', { class: 'spacer' }), gen));
+    return box;
+  }
+  const href = `#/note/${encodeURIComponent(latest.path)}`;
+  const lastWeek = !current && latest.to === shiftDate(rv.thisWeek.from, -1);
+  const when = `${current ? '本周 ' : lastWeek ? '上周 ' : ''}${shortDay(latest.from)} 至 ${shortDay(latest.to)}${latest.complete ? '' : ` · 进行中，数据到 ${shortDay(latest.through)}`}`;
+  box.append(el('div', { class: 'strip-row' }, el('a', { class: 'strip-title', href }, '🪞 周回顾'), el('span', { class: 'muted review-when', 'data-new': newAttr(latest.path) }, when), el('div', { class: 'spacer' }), gen));
+  if (latest.narrative) {
+    const body = el('div', { class: 'md review-body' + (state.reviewOpen ? '' : ' clamp'), html: renderMd(latest.narrative) });
+    const toggle = el('button', { class: 'more-btn', onclick: () => { state.reviewOpen = !state.reviewOpen; body.classList.toggle('clamp', !state.reviewOpen); toggle.textContent = state.reviewOpen ? '收起' : '展开全文'; if (state.reviewOpen) seenNote(latest.path); } }, state.reviewOpen ? '收起' : '展开全文');
+    box.append(body, el('div', { class: 'review-foot' }, toggle, el('a', { class: 'more-btn', href }, '完整回顾和数据 →')));
+  } else {
+    box.append(el('div', { class: 'review-foot' }, el('span', { class: 'muted' }, rv.aiEnabled ? '这一份只有数据，文字部分没写出来。' : 'AI 未开启，这一份只有数据。'),
+      !rv.aiEnabled && el('a', { class: 'more-btn', href: '#/settings' }, '去开启'), el('a', { class: 'more-btn', href }, '看数据 →')));
+  }
+  return box;
+}
+const isEnter = (e) => e.key === 'Enter' && !e.isComposing && e.keyCode !== 229; // not the Enter that confirms an IME candidate
+/** Home: one line that takes a question to the ask page (kept out of the URL: questions are private). */
+function askStrip() {
+  const input = el('input', { type: 'search', placeholder: '这周我关注了什么？最近睡得怎么样？', 'aria-label': '问笔记', enterkeyhint: 'search', value: state.askDraft || '' });
+  const go = () => { const q = input.value.trim(); if (!q) { location.hash = '#/ask'; return; } state.askDraft = ''; state.pendingAsk = q; location.hash = '#/ask'; };
+  input.addEventListener('input', () => { state.askDraft = input.value; });
+  input.addEventListener('keydown', (e) => { if (isEnter(e)) { e.preventDefault(); go(); } });
+  return el('div', { class: 'strip ask-strip' }, el('div', { class: 'strip-row' }, el('a', { class: 'strip-title', href: '#/ask' }, '💬 问笔记'), input, el('button', { class: 'btn small', onclick: go }, '问')));
+}
+
+/** "[2]" / "[1][4]" / "[1, 3]" in an answer become buttons that open the cited record. */
+function citeify(root, sources, open) {
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  const used = new Set();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) if (!walker.currentNode.parentElement.closest('a,code,pre')) texts.push(walker.currentNode);
+  for (const t of texts) {
+    const parts = t.nodeValue.split(/([\[【]\s*\d{1,2}(?:\s*[,，、]\s*\d{1,2})*\s*[\]】])/);
+    if (parts.length < 2) continue;
+    const frag = document.createDocumentFragment();
+    for (const part of parts) {
+      const nums = /^[\[【]/.test(part) ? part.match(/\d+/g).map(Number) : null;
+      if (!nums || !nums.every((n) => byN.has(n))) { frag.append(part); continue; }
+      for (const n of nums) { used.add(n); frag.append(el('button', { class: 'cite', title: byN.get(n).title, onclick: () => open(byN.get(n)) }, String(n))); }
+    }
+    t.replaceWith(frag);
+  }
+  return used;
+}
+function askItem(a) {
+  const box = el('div', { class: 'ask-item' }, el('div', { class: 'ask-q' }, a.q));
+  if (a.pending) { box.append(el('div', { class: 'ask-wait' }, el('span', { class: 'dots' }), '正在翻笔记…')); return box; }
+  if (a.failed) { box.append(el('div', { class: 'ask-note err' }, a.failed)); return box; }
+  const r = a.r;
+  const open = (s) => openPeek(s.path);
+  let used = new Set();
+  if (r.answer) {
+    const body = el('div', { class: 'md ask-a', html: renderMd(r.answer) });
+    used = citeify(body, r.sources, open);
+    box.append(body);
+  } else {
+    box.append(el('div', { class: 'ask-note' }, r.empty ? `翻了 ${r.searched} 条记录，没有找到和这个问题相关的。换个说法，或者这件事还没被记进来。`
+      : r.error ? `AI 这次没答上来（${r.error}）。下面是最相关的记录：` : 'AI 未开启，下面是最相关的记录。',
+      !r.empty && !r.error && !r.aiEnabled && el('a', { class: 'more-btn', href: '#/settings', style: 'margin-left:8px' }, '去开启')));
+  }
+  if (r.sources.length) {
+    const list = el('div', { class: 'src-list' });
+    list.append(el('div', { class: 'src-head' }, r.answer ? `依据 · ${used.size || r.sources.length} 条` : `相关记录 · ${r.sources.length} 条`, r.window && el('span', { class: 'muted' }, ` · 时间范围 ${r.window.label}`)));
+    const shown = r.answer && used.size ? r.sources.filter((s) => used.has(s.n)) : r.sources;
+    const rest = r.answer && used.size ? r.sources.filter((s) => !used.has(s.n)) : [];
+    const row = (s) => el('div', { class: 'src', role: 'button', tabindex: '0', onclick: () => open(s), onkeydown: (e) => { if (e.key === 'Enter') open(s); } },
+      el('span', { class: 'src-n' }, String(s.n)),
+      el('div', { class: 'src-body' }, el('div', { class: 'src-t' }, s.title),
+        el('div', { class: 'src-m' }, [s.notebook ? `${s.notebook.icon} ${s.notebook.title}` : '页面', [s.date, s.time].filter(Boolean).join(' '), s.source].filter(Boolean).join(' · ')),
+        el('div', { class: 'src-x' }, cleanExcerpt(String(s.excerpt || '').replace(/\[([^\[\]:\n]{1,40}?)::\s*([^\]\n]+?)\]/g, '$1 $2'), 150))));
+    for (const s of shown) list.append(row(s));
+    if (rest.length) {
+      const more = el('div', { class: 'hidden' }, rest.map(row));
+      const btn = el('button', { class: 'more-btn', onclick: () => { more.classList.toggle('hidden'); btn.textContent = more.classList.contains('hidden') ? `还翻到 ${rest.length} 条没用上的` : '收起'; } }, `还翻到 ${rest.length} 条没用上的`);
+      list.append(btn, more);
+    }
+    box.append(list);
+  }
+  box.append(el('div', { class: 'ask-meta' }, `翻了 ${r.searched} 条记录 · ${(r.ms / 1000).toFixed(1)} 秒${r.model ? ' · ' + r.model : ''}`));
+  return box;
+}
+function renderAsks() {
+  const list = state.askList;
+  if (!list?.isConnected) return;
+  list.replaceChildren(...(state.asks || []).map(askItem));
+}
+async function runAsk(q) {
+  const item = { q, pending: true };
+  state.asks = [item, ...(state.asks || [])].slice(0, 20);
+  renderAsks();
+  try { item.r = await api('POST', '/api/ask', { question: q }); } catch (err) { item.failed = err.message; }
+  item.pending = false;
+  renderAsks();
+}
+async function viewAsk(main) {
+  const page = el('div', { class: 'page ask-page' });
+  page.append(el('h1', { class: 'page-title' }, '问笔记'), el('p', { class: 'standfirst' }, '只根据笔记本里已有的记录回答，并标出每句话的依据。问题里可以带时间：上周、这个月、11月3日。'));
+  const ta = el('textarea', { rows: 2, placeholder: '问点什么…', 'aria-label': '问题', enterkeyhint: 'send' });
+  const send = () => { const q = ta.value.trim(); if (!q) return; ta.value = ''; runAsk(q); };
+  ta.addEventListener('keydown', (e) => { if (isEnter(e) && !e.shiftKey) { e.preventDefault(); send(); } });
+  page.append(el('div', { class: 'capture' }, ta, el('div', { class: 'row' }, el('span', { class: 'muted', style: 'font-size:12px' }, state.ai?.enabled ? '↵ 发送 · ⇧↵ 换行' : 'AI 未开启：只会列出相关记录'), el('div', { style: 'flex:1' }), el('button', { class: 'btn small primary', onclick: send }, '问'))));
+  const busiest = state.notebooks.filter((n) => !n.inbox && n.auto !== false && (n.count ?? n.total)).sort((a, b) => (b.count ?? b.total) - (a.count ?? a.total)).slice(0, 2);
+  const ideas = ['这周我关注了什么？', '上周有哪些事值得跟进？', ...busiest.map((n) => `最近「${n.title}」里记了什么？`)];
+  page.append(el('div', { class: 'ask-ideas' }, ideas.map((q) => el('span', { class: 'chip btn-chip', onclick: () => runAsk(q) }, q))));
+  state.askList = el('div', { class: 'ask-list' });
+  page.append(state.askList);
+  main.append(topbar([{ label: '今天', href: '#/' }, { label: '问笔记' }]), page);
+  if (state.pendingAsk) { const q = state.pendingAsk; state.pendingAsk = ''; runAsk(q); }
+  else if (!state.background) setTimeout(() => { if (matchMedia('(hover: hover)').matches) ta.focus(); }, 60);
+  setTimeout(renderAsks, 0);
 }
 
 /** Journal cards in lists: clamp long entry bodies to a few lines with a 展开 toggle. */

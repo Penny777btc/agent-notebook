@@ -23,7 +23,7 @@ export class NotebookProfiles {
   constructor(vault) { this.vault = vault; this.built = 0; this.signature = ''; this.profiles = new Map(); this.idf = new Map(); }
 
   refresh() {
-    const notebooks = this.vault.listNotebooks().filter((n) => !n.inbox);
+    const notebooks = this.vault.listNotebooks().filter((n) => !n.inbox && n.auto !== false);
     const sig = notebooks.map((n) => `${n.folder}:${n.count}`).join('|');
     if (sig === this.signature && Date.now() - this.built < 120000) return;
     const tf = new Map(); // folder → Map(token → count)

@@ -14,6 +14,9 @@ import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
 import { ReadState } from './seen.js';
 import { AI_MODELS, AI_PROVIDERS, GROK_MODELS, aiSettings, testConnection } from './enrich.js';
+import { localDate } from './vault.js';
+import { REVIEW_FOLDER, reviewFacts, writeReview, listReviews, splitReview, weekOf, addDays } from './review.js';
+import { ask } from './ask.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -270,6 +273,39 @@ export function createApp({ vault, auth, backup }) {
       res.json(r);
     } catch (err) { next(err); }
   });
+  // ---- weekly review + ask the notes -------------------------------------------
+  // one page per Monday–Sunday week in the 回顾 notebook; { period: 'last' } or { from } picks another week than the current one
+  const reviewPeriod = (q = {}) => {
+    const thisWeek = weekOf(localDate(new Date()));
+    if (q.period === 'last') return weekOf(addDays(thisWeek.from, -1));
+    if (q.from) return { from: String(q.from), to: q.to ? String(q.to) : undefined };
+    return thisWeek;
+  };
+  api.get('/review', guard('read', () => REVIEW_FOLDER), (req, res) => {
+    const list = listReviews(vault);
+    res.set('Cache-Control', 'no-store').json({ folder: REVIEW_FOLDER, latest: list[0] ? { ...list[0], ...splitReview(vault.getNote(list[0].path).body) } : null, list: list.slice(0, 26), thisWeek: weekOf(localDate(new Date())), aiEnabled: aiSettings(auth).enabled });
+  });
+  // the numbers behind a review, without writing anything; the owner's own audit trail only for admins
+  api.get('/review/facts', guard('read'), (req, res) => {
+    res.json(reviewFacts(vault, auth, { ...reviewPeriod(req.query), can: (p) => auth.can(req.principal, 'read', p), activity: auth.can(req.principal, 'admin') }));
+  });
+  api.post('/review', guard('write'), async (req, res, next) => {
+    try {
+      const { facts, ...r } = await writeReview(vault, auth, { ...reviewPeriod(req.body || {}), log: aiLog });
+      if (isReader(req)) seen.mark({ path: r.path }); // the owner asked for it and is looking at it: not news
+      req.audit('review', r.path, { via: 'web', from: r.period.from, to: r.period.through, narrative: r.narrative, ms: r.ms });
+      res.status(r.created ? 201 : 200).json({ ...r, totals: facts.totals });
+    } catch (err) { next(err); }
+  });
+  // a question answered from the notes the caller may read, with numbered sources; without AI the ranked notes alone
+  api.post('/ask', guard('read'), async (req, res, next) => {
+    try {
+      const question = String(req.body?.question || '').trim();
+      if (!question) return res.status(400).json({ error: 'question is required' });
+      const r = await ask(vault, auth, question, { can: (p) => auth.can(req.principal, 'read', p), log: aiLog });
+      res.json({ ...r, aiEnabled: aiSettings(auth).enabled });
+    } catch (err) { next(err); }
+  });
   api.post('/move', guard('write', (r) => r.body.folder || ''), (req, res) => {
     const { path: p, folder, learn } = req.body;
     const wasUnread = unreadBefore(req);
@@ -430,7 +466,7 @@ export function createApp({ vault, auth, backup }) {
 /** Owner-without-token only for a direct local connection. A tunnel (cloudflared, tailscale serve, a reverse
  *  proxy) also connects from 127.0.0.1 but announces the real client in a forwarding header → not loopback. */
 function openapi(base, vault) {
-  const notebooks = vault.listNotebooks().filter((n) => !n.inbox).map((n) => n.folder);
+  const notebooks = vault.listNotebooks().filter((n) => !n.inbox && n.auto !== false).map((n) => n.folder);
   const captureBody = { type: 'object', required: ['text'], properties: {
     text: { type: 'string', description: 'The content to keep (Markdown ok, [[Title]] links ok)' },
     title: { type: 'string', description: 'One-line headline (≤60 chars); defaults to the first line' },
@@ -452,6 +488,8 @@ function openapi(base, vault) {
         patch: { operationId: 'updateNote', summary: 'Edit a note: replace or append body, rename, change properties (null removes one)', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string', description: 'Replace the whole Markdown body' }, append: { type: 'string', description: 'Append Markdown to the end' }, tags: { type: 'array', items: { type: 'string' } }, status: { type: 'string', description: 'Board column' } }, additionalProperties: true } } } }, responses: { 200: { description: 'updated note' } } },
         delete: { operationId: 'deleteNote', summary: 'Move a note to the trash', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'deleted' } } } },
       '/api/entries/{path}': { patch: { operationId: 'updateEntry', summary: 'Edit or delete ONE timestamped entry of a journal day page (e.g. correct this morning\'s 财务 entry)', parameters: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' }, description: 'The day page, e.g. 财务/2026-11-01.md' }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { time: { type: 'string', description: 'HH:MM of the entry (from the page body or the capture result\'s entry)' }, match: { type: 'string', description: 'Substring of the entry title/text when several share a time' }, title: { type: 'string' }, text: { type: 'string', description: 'New body for that entry' }, properties: { type: 'object', additionalProperties: true, description: 'Inline fields to set, e.g. {amount: 66.7}; null removes one' }, remove: { type: 'boolean', description: 'true deletes the entry' } } } } } }, responses: { 200: { description: 'updated day page' } } } },
+      '/api/ask': { post: { operationId: 'ask', summary: "Ask a question and get an answer written from the owner's notes, with numbered sources (the ranked notes alone when AI is off)", requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['question'], properties: { question: { type: 'string', description: 'e.g. 这周我关注了什么 / 最近的睡眠怎么样' } } } } } }, responses: { 200: { description: 'answer, sources[], window' } } } },
+      '/api/review/facts': { get: { operationId: 'reviewFacts', summary: 'Facts about one week: items added per notebook and source, inbox and board backlog, journal metrics vs the week before, quiet notebooks', parameters: [{ name: 'period', in: 'query', schema: { type: 'string', enum: ['this', 'last'] } }, { name: 'from', in: 'query', schema: { type: 'string', format: 'date' }, description: 'Monday of the week' }], responses: { 200: { description: 'period, totals, notebooks[], backlog, metrics[], themes, coverage[]' } } } },
       '/api/metrics/{notebook}': { get: { operationId: 'metrics', summary: 'Numeric series of a notebook (amount, weight…)', parameters: [{ name: 'notebook', in: 'path', required: true, schema: { type: 'string' } }, { name: 'from', in: 'query', schema: { type: 'string' } }, { name: 'to', in: 'query', schema: { type: 'string' } }], responses: { 200: { description: 'keys[] + series' } } } }
     }
   };

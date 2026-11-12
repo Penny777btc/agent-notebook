@@ -234,6 +234,8 @@ export class Vault {
       view: NOTEBOOK_VIEWS.includes(d.view) ? d.view : null,
       columns: kind === 'board' ? (Array.isArray(d.columns) && d.columns.length ? d.columns : DEFAULT_COLUMNS) : null,
       inbox: !!d.inbox,
+      // auto: false keeps the router and the AI from filing captures here (e.g. the generated weekly reviews)
+      auto: d.auto !== false,
       order: typeof d.order === 'number' ? d.order : 100
     };
   }
@@ -256,13 +258,13 @@ export class Vault {
     return this.listNotebooks().find((n) => n.inbox)?.folder || null;
   }
 
-  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, inbox = false, order }) {
+  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, inbox = false, auto, order }) {
     if (!folder) throw new VaultError('folder is required', 400);
     if (!NOTEBOOK_KINDS.includes(kind)) throw new VaultError(`kind must be one of ${NOTEBOOK_KINDS.join(', ')}`, 400);
     const dirAbs = this.resolve(folder);
     fs.mkdirSync(dirAbs, { recursive: true });
     if (this.isNotebook(folder)) throw new VaultError(`Notebook already exists: ${folder}`, 409);
-    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, order });
+    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, auto: auto === false ? false : undefined, order });
     fs.writeFileSync(path.join(dirAbs, NOTEBOOK_FILE), matter.stringify('\n' + description + '\n', data));
     return this.getNotebookMeta(folder);
   }
@@ -279,6 +281,7 @@ export class Vault {
       ...routing({ route_tags: patch.route_tags ?? meta.route_tags, view: patch.view !== undefined ? patch.view : meta.view }),
       columns: (patch.kind ?? meta.kind) === 'board' ? (patch.columns ?? meta.columns ?? DEFAULT_COLUMNS) : undefined,
       inbox: (patch.inbox ?? meta.inbox) || undefined,
+      auto: (patch.auto ?? meta.auto) === false ? false : undefined,
       order: patch.order ?? meta.order
     });
     fs.writeFileSync(path.join(abs, NOTEBOOK_FILE), matter.stringify('\n' + (patch.description ?? meta.description) + '\n', data));

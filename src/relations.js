@@ -4,7 +4,7 @@
 // "related" edges next to the solid [[link]] edges.
 import crypto from 'node:crypto';
 import { tokenCounts } from './content.js';
-import { complete, aiSettings } from './enrich.js';
+import { complete, aiSettings, isChatter, NOT_A_TASK } from './enrich.js';
 
 const ENTITY_RE = /\$?[A-Z][A-Z0-9]{2,9}\b|@[A-Za-z0-9_]{2,}|\b0x[a-fA-F0-9]{6,}/g;
 const ENTITY_STOP = new Set(['HTTP', 'HTTPS', 'JSON', 'API', 'URL', 'MCP', 'GET', 'POST', 'PATCH', 'DELETE', 'TODO', 'README', 'UTC', 'JST', 'AM', 'PM', 'OK', 'AI', 'LLM', 'PDF', 'CSV', 'PNG', 'JPG', 'HTML', 'CSS', 'RSS', 'HN', 'HF', 'IPO', 'CEO', 'CTO', 'USD', 'CNY', 'JPY', 'USDT', 'USDC', 'ETH', 'BTC', 'BNB', 'SOL']);
@@ -109,6 +109,7 @@ const CONCEPT_SYSTEM = `你是私人笔记本的知识图谱助手。读一条�
 - 概念是具体的实体（项目、代币、产品、人物、机构、地点）、主题或方法名；用原文里的叫法（英文代号保留原样，如 ACARD、Claude Code；中文用常用简称），每个不超过 12 个字。
 - 不要泛词（方法、总结、记录、问题、今天、测试、笔记、内容），不要重复，不要把日期和数字当概念。
 - 再给一句不超过 40 个字的摘要，陈述事实或结论。
+${NOT_A_TASK}
 只输出一个 JSON 对象，不要 Markdown 代码块，不要解释：{"concepts": ["…"], "summary": "…"}`;
 
 /** Ask the model for a note's concepts + one-line summary. Returns null when AI is off or fails. */
@@ -116,12 +117,14 @@ export async function extractConcepts(auth, { title, text }, { log } = {}) {
   if (!aiSettings(auth).enabled) return null;
   const started = Date.now();
   try {
-    const res = await complete(auth, { system: CONCEPT_SYSTEM, user: `标题：${title || ''}\n\n正文：\n${String(text || '').slice(0, 5000)}`, maxTokens: 400, schema: { type: 'object', properties: { concepts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } }, required: ['concepts', 'summary'] } });
+    const res = await complete(auth, { system: CONCEPT_SYSTEM, user: `标题：${title || ''}\n\n<record>\n${String(text || '').slice(0, 5000)}\n</record>`, maxTokens: 400, schema: { type: 'object', properties: { concepts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } }, required: ['concepts', 'summary'] } });
     const m = String(res.text || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').match(/\{[\s\S]*\}/);
     const parsed = m ? JSON.parse(m[0]) : null;
     if (!parsed || !Array.isArray(parsed.concepts)) { log?.({ event: 'ai:concepts:unparsable', sample: String(res.text || '').slice(0, 120) }); return null; }
     const concepts = [...new Set(parsed.concepts.map((c) => String(c).trim()).filter((c) => c && c.length <= 24))].slice(0, 8);
     const out = { concepts, summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 80) : '', model: res.model, ms: Date.now() - started };
+    // the model described its own actions instead of the note: keep nothing, the note stays pending for the next pass
+    if (isChatter(out.summary, `${title}\n${text}`)) { log?.({ event: 'ai:chatter', stage: 'concepts', sample: out.summary.slice(0, 80) }); return null; }
     log?.({ event: 'ai:concepts', model: res.model, ms: out.ms, n: concepts.length });
     return out;
   } catch (err) { log?.({ event: 'ai:error', stage: 'concepts', error: err.message }); return null; }
@@ -130,7 +133,10 @@ export async function extractConcepts(auth, { title, text }, { log } = {}) {
 /** Notes whose concepts are missing or stale (body changed since). */
 export function notesNeedingConcepts(vault) {
   const out = [];
+  // generated pages (weekly reviews) are about everything at once: concepts on them would link the whole graph together
+  const generated = new Set(vault.listNotebooks().filter((n) => n.auto === false).map((n) => n.folder));
   for (const n of vault.listNotes({ limit: 10000 })) {
+    if (generated.has(n.folder)) continue;
     let full; try { full = vault.getNote(n.path); } catch { continue; }
     const p = full.properties || {};
     const body = String(full.body || '');
