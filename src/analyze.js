@@ -184,8 +184,13 @@ export async function analyze(vault, auth, rel, { can, log, now = new Date(), we
   } catch (err) { localError = err.message; log?.({ event: 'ai:error', stage: 'analyze', error: err.message }); }
 
   if (!webPart && !localPart) throw Object.assign(new Error(`分析没有成功：${localError || webError}`), { status: 502 });
-  const text = [webPart?.text, localPart?.text].filter(Boolean).join('\n\n');
   const used = new Set([...(localPart?.text || '').matchAll(/[\[【]([\d\s,，、]+)[\]】]/g)].flatMap((m) => m[1].match(/\d+/g) || []).map(Number));
+  // nothing cited means nothing related: one plain sentence instead of the model's account of why each candidate did not fit
+  if (localPart && !hits.some((h) => used.has(h.n))) {
+    const at = localPart.text.indexOf(H.meaning);
+    localPart.text = `${H.related}\n\n笔记本里还没有和它直接相关的记录。\n\n${localPart.text.slice(at)}`;
+  }
+  const text = [webPart?.text, localPart?.text].filter(Boolean).join('\n\n');
   const related = hits.filter((h) => used.has(h.n)).map((h) => ({ n: h.n, path: h.path, title: h.title, date: h.date, ...(h.time ? { time: h.time } : {}), ...(h.notebook ? { notebook: `${h.notebook.icon || ''} ${h.notebook.title}`.trim() } : {}) }));
   const ms = Date.now() - started;
   store(vault, note, text, {

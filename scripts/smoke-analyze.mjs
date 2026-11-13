@@ -175,6 +175,12 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   const h = await analyze(vault, auth, back.path, { web: false });
   assert.equal(h.web, false);
   assert.ok(!fs.existsSync(`${out}.web.count`) && !h.webError);
+  // no record cited → one plain sentence, not the model's reasons why nothing fitted
+  fs.writeFileSync(`${out}.local.reply`, reply('## 和已有记录的关联\n- 这条和别的记录只是同一天写下的，不算关联，因此不附编号。\n\n## 对我意味着什么\n- 先核对是否佩戴。'));
+  const k = await analyze(vault, auth, back.path, { web: false });
+  assert.deepEqual(k.related, []);
+  assert.ok(k.text.includes('## 和已有记录的关联\n\n笔记本里还没有和它直接相关的记录。\n\n## 对我意味着什么\n- 先核对是否佩戴。') && !k.text.includes('不附编号'));
+  fs.writeFileSync(`${out}.local.reply`, reply(LOCAL));
   console.log('ok 7  journal pages are analysed inside the vault only; web: false keeps any record offline');
 
   // 8. REST: POST starts a job, GET follows it; tokens are held to their scopes
