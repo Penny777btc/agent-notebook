@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { Vault } from '../src/vault.js';
 import { Auth } from '../src/auth.js';
 import { aiSettings, complete, webCapable } from '../src/enrich.js';
-import { analyze, readAnalysis, parseWebPart, parseLocalPart, startAnalysis, analysisStatus, analysisSettled } from '../src/analyze.js';
+import { analyze, readAnalysis, parseWebPart, parseLocalPart, spread, startAnalysis, analysisStatus, analysisSettled } from '../src/analyze.js';
 import { createApp } from '../src/web-server.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'anb-analyze-'));
@@ -67,6 +67,11 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   assert.equal(parseWebPart('## 原文要点\n- 一条细节，写得足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长。\n\n## 互动要点\n- 别的').ok, false, 'a second section under another name is not accepted');
   assert.ok(parseLocalPart(`好的。\n${LOCAL}`).ok);
   assert.equal(parseLocalPart('我先看一下笔记本。').ok, false);
+  // a daily card must not take every place among the related records
+  const daily = [7.14, 7.74, 7.39, 7.37, 7.53].map((p, i) => ({ path: `d${i}.md`, title: `比特币 ${p} 万美元（24 小时 -${i}.58%），资金净流出 ${8 + i}.28 亿美元，情绪 2${i}` }));
+  const mixed = spread([...daily.slice(0, 4), { path: 'a.md', title: '@someone：NVDA 没有底' }, daily[4], { path: 'b.md', title: 'ETH 质押收益率下降' }], 8);
+  assert.deepEqual(mixed.map((h) => h.path), ['d0.md', 'd1.md', 'a.md', 'b.md']);
+  assert.equal(spread(daily, 1).length, 1);
   console.log('ok 1  the two parts are cut out of what the model returned');
 
   // 2. a provider that cannot go online: the vault half alone, stored beside the note
