@@ -82,7 +82,7 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   assert.deepEqual(a.related.map((r) => [r.n, r.path]), [[1, other.path]], 'only the cited records are kept, and only numbers that exist');
   assert.ok(lastUser.includes('<record>') && lastUser.includes('私密内容') && lastUser.includes('<notebooks>') && !lastUser.includes('<supplement>'));
   assert.ok(!lastUser.includes('这周看了 ETH'), 'a generated review is not used as a related record');
-  assert.ok(lastUser.trimEnd().endsWith('全文不超过 400 字。'), 'the format is asked for again after the material');
+  assert.ok(lastUser.trimEnd().endsWith('全文不超过 600 字。'), 'the format is asked for again after the material');
   const files = fs.readdirSync(path.join(tmp, '.notebook', 'analysis'));
   assert.equal(files.length, 1);
   const after = vault.getNote(target.path);

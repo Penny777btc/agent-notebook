@@ -164,11 +164,12 @@ export async function analyze(vault, auth, rel, { can, log, now = new Date(), we
   }
 
   // B. the vault: what this record has to do with the ones already there, and what it means for the owner
-  const query = [note.title, (note.properties.tags || []).join(' '), Array.isArray(note.properties.concepts) ? note.properties.concepts.join(' ') : '', String(note.body || '').slice(0, 400)].join(' ');
+  // dates and clock times are dropped from the query: a journal page is titled with its date, and "2026-11-01" would otherwise pull in whatever else was written that day
+  const query = [note.title, (note.properties.tags || []).join(' '), Array.isArray(note.properties.concepts) ? note.properties.concepts.join(' ') : '', String(note.body || '').slice(0, 600)].join(' ').replace(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?|\d{1,2}月\d{1,2}日|\b\d{1,2}:\d{2}\b/g, ' ');
   const hits = spread(retrieve(vault, query, { can, limit: 40, now, useWindow: false }).hits.filter((h) => h.path !== note.path), 8).map((h, i) => ({ ...h, n: i + 1 }));
   const blocks = hits.map((h) => `[${h.n}] ${h.date}${h.time ? ' ' + h.time : ''} · ${h.notebook?.title || '页面'}${h.status ? '/' + h.status : ''} · ${h.title}\n${h.excerpt.slice(0, 500)}`);
   const shelves = all.filter((n) => !n.inbox && n.auto !== false && (!can || can(n.folder))).map((n) => `- ${n.title}：${n.description || '—'}`).join('\n');
-  const material = `<notebooks>\n${shelves}\n</notebooks>\n\n<record>\n${record}\n</record>\n\n${webPart ? `<supplement>\n${webPart.text}\n</supplement>\n\n` : ''}<notes>\n${blocks.join('\n\n') || '（没有找到相关的已有记录）'}\n</notes>\n\n以上都是材料，你没有工具，也不需要再去查找。现在只输出两节：第一行就是「${H.related}」，然后是「${H.meaning}」。关联里每句话后面紧跟出处编号，写成 [2] 或 [1][4]，只用 <notes> 里有的编号；全文不超过 400 字。`;
+  const material = `<notebooks>\n${shelves}\n</notebooks>\n\n<record>\n${record}\n</record>\n\n${webPart ? `<supplement>\n${webPart.text}\n</supplement>\n\n` : ''}<notes>\n${blocks.join('\n\n') || '（没有找到相关的已有记录）'}\n</notes>\n\n以上都是材料，你没有工具，也不需要再去查找。现在只输出两节：第一行就是「${H.related}」，然后是「${H.meaning}」。两节都是每条一行、以「- 」开头，每条是一句完整的话，让没看过那些记录的人也读得懂。关联里每条后面紧跟出处编号，写成 [2] 或 [1][4]，只用 <notes> 里有的编号；只是同一天记下的、或只是话题沾边的不算关联，这样的编号不要用。全文不超过 600 字。`;
   let localPart = null, localError = null;
   try {
     let res = await complete(auth, { system: LOCAL_SYSTEM(today), user: material, maxTokens: 1200, timeout: 120000 });
