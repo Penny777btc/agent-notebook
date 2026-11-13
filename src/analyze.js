@@ -43,7 +43,7 @@ ${H.background}
 const LOCAL_SYSTEM = (today) => `你是这本私人笔记本的分析助手。主人挑了一条记录想深入看。你拿到三样材料：这条记录 <record>；从原文和网上核对到的补充 <supplement>（可能没有）；笔记本里和它最相关的几条已有记录 <notes>（带编号）。用中文只写两节：
 
 ${H.related}
-这条和哪几条已有记录讲的是同一件事、同一个人或项目，或者互相印证、互相矛盾。每条一行，以「- 」开头，说清关联是什么：不要把已有记录的内容再抄一遍，只写它和这条记录的关系，句末标出处编号，如 [2] 或 [1][4]。只是话题沾边的不算；没有真正相关的就只写一句「笔记本里还没有和它直接相关的记录。」，不要硬凑。
+这条和哪几条已有记录讲的是同一件事、同一个人或项目，或者互相印证、互相矛盾。每条一行，以「- 」开头，说清关联是什么：不要把已有记录的内容再抄一遍，只写它和这条记录的关系，句末标出处编号，如 [2] 或 [1][4]。同一位作者的其他发言、同一个币或公司当时的行情，都算关联；只是同一天记下、内容互不相干的不算。没有真正相关的就只写一句「笔记本里还没有和它直接相关的记录。」，不要硬凑。
 
 ${H.meaning}
 站在主人的角度写 2 到 4 条，每条一行，以「- 」开头：这条值不值得继续跟；能变成什么（一个选题、一个要验证的判断、一件要做的事）；下一步具体做什么。主人平时关注什么见 <notebooks>。要具体，不要空话；涉及钱的只写要验证什么，不给买卖指令。
@@ -169,7 +169,7 @@ export async function analyze(vault, auth, rel, { can, log, now = new Date(), we
   const hits = spread(retrieve(vault, query, { can, limit: 40, now, useWindow: false }).hits.filter((h) => h.path !== note.path), 8).map((h, i) => ({ ...h, n: i + 1 }));
   const blocks = hits.map((h) => `[${h.n}] ${h.date}${h.time ? ' ' + h.time : ''} · ${h.notebook?.title || '页面'}${h.status ? '/' + h.status : ''} · ${h.title}\n${h.excerpt.slice(0, 500)}`);
   const shelves = all.filter((n) => !n.inbox && n.auto !== false && (!can || can(n.folder))).map((n) => `- ${n.title}：${n.description || '—'}`).join('\n');
-  const material = `<notebooks>\n${shelves}\n</notebooks>\n\n<record>\n${record}\n</record>\n\n${webPart ? `<supplement>\n${webPart.text}\n</supplement>\n\n` : ''}<notes>\n${blocks.join('\n\n') || '（没有找到相关的已有记录）'}\n</notes>\n\n以上都是材料，你没有工具，也不需要再去查找。现在只输出两节：第一行就是「${H.related}」，然后是「${H.meaning}」。两节都是每条一行、以「- 」开头，每条是一句完整的话，让没看过那些记录的人也读得懂。关联里每条后面紧跟出处编号，写成 [2] 或 [1][4]，只用 <notes> 里有的编号；只是同一天记下的、或只是话题沾边的不算关联，这样的编号不要用。全文不超过 600 字。`;
+  const material = `<notebooks>\n${shelves}\n</notebooks>\n\n<record>\n${record}\n</record>\n\n${webPart ? `<supplement>\n${webPart.text}\n</supplement>\n\n` : ''}<notes>\n${blocks.join('\n\n') || '（没有找到相关的已有记录）'}\n</notes>\n\n以上都是材料，你没有工具，也不需要再去查找。现在只输出两节：第一行就是「${H.related}」，然后是「${H.meaning}」。两节都是每条一行、以「- 」开头，每条是一句完整的话，让没看过那些记录的人也读得懂。关联里每条后面紧跟出处编号，写成 [2] 或 [1][4]，只用 <notes> 里有的编号；同一位作者、同一个项目或标的、同一件事的记录要写出来；只是同一天记下、内容互不相干的不算关联，这样的编号不要用。全文不超过 600 字。`;
   let localPart = null, localError = null;
   try {
     let res = await complete(auth, { system: LOCAL_SYSTEM(today), user: material, maxTokens: 1200, timeout: 120000 });
