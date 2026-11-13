@@ -64,9 +64,9 @@ function excerptOf(text, terms, max = 700) {
  * The notes most relevant to a question → { hits: [{ n, path, title, notebook, date, time, source, excerpt, score }], window }.
  * `can(path)` limits it to what the caller may read.
  */
-export function retrieve(vault, question, { can, limit = 12, now = new Date() } = {}) {
+export function retrieve(vault, question, { can, limit = 12, now = new Date(), useWindow = true } = {}) {
   const today = localDate(now);
-  const window = timeWindow(question, today);
+  const window = useWindow ? timeWindow(question, today) : null; // off when the "question" is a record's own text, where 今天 is not a filter
   const q = String(question || '');
   const { docs, notebooks } = documents(vault, can);
   const terms = [...tokenCounts(q.replace(TIME_WORDS, ' ')).keys()];

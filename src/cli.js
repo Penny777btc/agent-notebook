@@ -13,6 +13,7 @@ import { createApp } from './web-server.js';
 import { listAgents, connectAgent } from './agents.js';
 import { reviewFacts, writeReview, startReviewSchedule, weekOf, addDays } from './review.js';
 import { localDate } from './vault.js';
+import { analyze } from './analyze.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -43,6 +44,7 @@ Usage:
   agent-notebook connect AGENT_ID [--scopes read,write] [--folders ...] [--no-skill]   one-shot: create token + write that agent's MCP config
   agent-notebook backup init [REMOTE_URL] | now | status
   agent-notebook review  [--last | --from YYYY-MM-DD] [--facts]              write this week's review page (--last: the week before; --facts: print the numbers only)
+  agent-notebook analyze NOTE_PATH [--offline]                               read one record properly: original + background from the web, ties to other records
   agent-notebook init    [--vault DIR]                                       create an empty vault with example boards
 
 Vault directory: --vault, $AGENT_NOTEBOOK_VAULT, ./vault (if exists), else ~/AgentNotebook`;
@@ -149,6 +151,14 @@ async function main() {
       const { facts, ...r } = await writeReview(vault, auth, { ...period, log: (e) => auth.audit({ name: 'ai' }, e.event, '', e) });
       auth.audit({ name: 'system' }, 'review', r.path, { via: 'cli', from: r.period.from, to: r.period.through, narrative: r.narrative, ms: r.ms });
       console.log(`${r.created ? 'written' : 'updated'}: ${r.path}  (${r.narrative ? `narrative by ${r.model}` : `data only${r.error ? ': ' + r.error : ''}`}, ${facts.totals.added} items, ${r.ms} ms)`);
+      return;
+    }
+    case 'analyze': {
+      if (!sub) return console.log(HELP);
+      const a = await analyze(vault, auth, [sub, ...rest].join(' '), { web: flags.offline ? false : undefined, log: (e) => auth.audit({ name: 'ai' }, e.event, '', e) });
+      auth.audit({ name: 'system' }, 'analyze', sub, { via: 'cli', web: a.web, sources: a.sources.length, related: a.related.length, ms: a.ms });
+      console.log(`${a.text}\n\n— ${a.model} · ${a.web ? `联网，${a.sources.length} 个来源` : `未联网${a.webError ? '（' + a.webError + '）' : ''}`} · 关联 ${a.related.length} 条 · ${a.ms} ms`);
+      for (const u of a.sources) console.log('  ' + u);
       return;
     }
     case 'backup': {

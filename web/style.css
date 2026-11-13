@@ -494,6 +494,23 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
 .article-page .props .v input, .article-page .props .v select { border-color: transparent; }
 .article-page .body-view { padding: 2px 0; }
 .article-page .md > :first-child { margin-top: 0; }
+/* 深入分析: a block of its own under the record, in the interface face so it never reads as part of what was recorded */
+.analysis { font-family: var(--font); margin-top: 36px; padding-top: 14px; border-top: 1.5px solid var(--text); }
+.analysis:empty { display: none; }
+.analysis-start { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+.analysis-start .hint { color: var(--text-3); font-size: 12.5px; line-height: 1.5; flex: 1; min-width: 200px; }
+.analysis-head { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
+.analysis-title { font-size: 12px; font-weight: 600; letter-spacing: .1em; color: var(--text-2); }
+.analysis-head .meta { color: var(--text-3); font-size: 12px; flex: 1; min-width: 0; }
+.analysis .ask-note { margin-top: 8px; font-size: 13px; }
+.analysis-body { font-family: var(--font); margin-top: 12px; font-size: 15px; line-height: 1.75; text-align: left; hyphens: manual; }
+.analysis-body h2 { font-family: var(--font); font-size: 13px; font-weight: 600; letter-spacing: .06em; color: var(--text-2); margin: 1.5em 0 .4em; }
+.analysis-body h2::before { display: none; }
+.analysis-body > h2:first-child { margin-top: 0; }
+.analysis-body p + p { text-indent: 0; margin-top: .5em; }
+.analysis-body ul, .analysis-body ol { margin: .3em 0 .6em; padding-left: 1.3em; }
+.analysis-src { font-family: var(--font); margin-top: 10px; font-size: 12.5px; color: var(--text-3); line-height: 2; }
+.analysis-src p { margin: 0; }
 .colophon { font-family: var(--font); font-size: 12px; color: var(--text-3); margin-top: 40px; padding-top: 10px; border-top: 1px solid var(--border-2); letter-spacing: .01em; word-break: break-all; }
 .article-page .body-view > p:first-child { font-size: 19.5px; line-height: 1.7; margin-bottom: .7em; }
 .article-page .body-view.dropcap > p:first-child::first-letter { float: left; font-family: var(--serif); font-size: 3.35em; line-height: .82; font-weight: 700; padding: .1em .12em 0 0; color: var(--text); }

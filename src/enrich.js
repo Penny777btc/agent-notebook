@@ -82,6 +82,15 @@ export function grokMcpServers(home = path.join(os.homedir(), '.grok')) {
   } catch { return []; }
 }
 const grokEnv = () => ({ GROK_CONFIG: JSON.stringify({ disabled_mcp_servers: grokMcpServers(), compat: { claude: OFF, cursor: OFF } }) });
+// Web mode (the owner pressing "深入分析" on one record): the same agent with exactly two tool groups, web search (which
+// brings open_page) and web fetch, each pre-approved by a rule because a headless run cannot ask. Everything else is shut
+// out twice: it is not on the allowlist, and a deny rule refuses it in a mode that never prompts. The second layer matters
+// because an allowlist entry grok does not know voids the whole list ("names no tool, so other tools stay available"), so
+// only names verified against the installed CLI go in here, and that warning on stderr fails the call.
+const GROK_WEB = ['--tools', 'web_search,web_fetch', '--permission-mode', 'dontAsk', '--allow', 'WebFetch', '--allow', 'WebSearch',
+  '--deny', 'Bash', '--deny', 'Read', '--deny', 'Edit', '--deny', 'Grep', '--deny', 'MCPTool', '--no-subagents', '--no-plan'];
+/** Whether the configured provider can read the web for a call made with `web: true`. */
+export const webCapable = (auth) => { const s = aiSettings(auth); return s.enabled && s.provider === 'grok-cli'; };
 
 function client(auth) {
   const c = auth.config.ai || {};
@@ -99,10 +108,14 @@ function run(bin, args, { input, timeout = 60000, env } = {}) {
   });
 }
 
-/** One completion through whichever provider is configured → { text, model, usage, refusal? }. */
-export async function complete(auth, { system, user, maxTokens = 800, schema, timeout }) {
+/**
+ * One completion through whichever provider is configured → { text, model, usage, refusal? }.
+ * `web: true` lets the model search and open pages (grok only, see GROK_WEB); the caller decides what it is given to read.
+ */
+export async function complete(auth, { system, user, maxTokens = 800, schema, timeout, web = false }) {
   const s = aiSettings(auth);
-  const cliTimeout = timeout || 90000; // long-form jobs (the weekly review) pass their own
+  const cliTimeout = timeout || (web ? 240000 : 90000); // long-form jobs (the weekly review) pass their own
+  if (web && s.provider !== 'grok-cli') throw new Error('当前的 AI 方式不能联网');
   if (s.provider === 'claude-cli') {
     if (!s.cli.claude) throw new Error('本机没有找到 claude 命令：先安装 Claude Code 并登录（终端运行 claude）');
     const { stdout } = await run(s.cli.claude.path, ['-p', '--output-format', 'json', '--model', s.model, '--no-session-persistence', '--setting-sources', '', '--tools', '', '--system-prompt', system], { input: user, timeout: cliTimeout });
@@ -117,17 +130,19 @@ export async function complete(auth, { system, user, maxTokens = 800, schema, ti
     // headless: no tools (see GROK_NO_TOOLS), one turn, the user text as the prompt argument
     // our own system prompt replaces the coding-agent one (26k tokens of tools/skills that only confuse a
     // classification job); a JSON schema pins the output shape
-    const args = ['-p', user, '--output-format', 'json', ...GROK_NO_TOOLS, '--max-turns', '1', '--disable-web-search', '--effort', 'low', '--system-prompt-override', system];
+    const args = ['-p', user, '--output-format', 'json', ...(web ? [...GROK_WEB, '--max-turns', '12'] : [...GROK_NO_TOOLS, '--max-turns', '1', '--disable-web-search']), '--effort', 'low', '--system-prompt-override', system];
     if (schema) args.push('--json-schema', JSON.stringify(schema));
     if (s.grokModel) args.push('-m', s.grokModel);
-    const { stdout } = await run(s.cli.grok.path, args, { timeout: cliTimeout, env: grokEnv() });
+    const { stdout, stderr } = await run(s.cli.grok.path, args, { timeout: cliTimeout, env: grokEnv() });
+    if (web && /names no tool/i.test(stderr)) throw new Error('grok 不认识联网工具的名字，工具限制没有生效：这次结果作废（grok 升级后需要重新核对工具名）');
     const json = parseJson(stdout.slice(stdout.indexOf('{')));
     if (!json) throw new Error('grok 输出无法解析：' + stdout.slice(0, 160));
     if (json.type === 'error' || json.error) throw new Error('grok 返回错误：' + String(json.message || json.error).slice(0, 200));
+    if (json.stopReason === 'cancelled') throw new Error('grok 的一步操作没有被允许：' + String(json.text || '').slice(0, 120));
     // the turn ended on a tool call: the text is what it meant to do next, not an answer
-    if (json.stopReason === 'max_turn_requests') throw new Error('grok 想去调用工具而不是直接回答：' + String(json.text || '').slice(0, 80));
+    if (json.stopReason === 'max_turn_requests') throw new Error((web ? 'grok 查了太多步还没写出结果：' : 'grok 想去调用工具而不是直接回答：') + String(json.text || '').slice(0, 80));
     const model = Object.keys(json.modelUsage || {})[0] || s.grokModel || 'grok';
-    return { text: String(json.text || ''), model, usage: json.usage ? { input: json.usage.input_tokens, output: json.usage.output_tokens } : undefined };
+    return { text: String(json.text || ''), model, usage: json.usage ? { input: json.usage.input_tokens, output: json.usage.output_tokens } : undefined, ...(web ? { turns: json.num_turns, cost: json.total_cost_usd } : {}) };
   }
   if (s.provider === 'codex-cli') {
     if (!s.cli.codex) throw new Error('本机没有找到 codex 命令：先安装 Codex CLI 并登录（终端运行 codex）');

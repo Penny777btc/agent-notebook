@@ -1038,8 +1038,50 @@ async function noteEditor(note, { onSaved } = {}) {
     ta.focus(); ta.style.height = Math.max(300, ta.scrollHeight + 40) + 'px';
   };
   showView(); drawLinks();
-  page.append(bodyWrap, updatedEl, linksBox);
+  page.append(bodyWrap, nb?.auto === false ? '' : analysisPanel(note, nb), updatedEl, linksBox);
   return page;
+}
+
+/** 「深入分析」 under a record: start it, wait for it, show it. The result is kept beside the note, never written into it. */
+function analysisPanel(note, nb) {
+  const box = el('section', { class: 'analysis' });
+  const url = '/api/analysis/' + encPath(note.path);
+  let timer = null;
+  const poll = () => { clearTimeout(timer); timer = setTimeout(async () => { if (!box.isConnected) return; try { draw(await api('GET', url)); } catch { poll(); } }, 3000); };
+  const start = async (btn) => { if (btn) btn.disabled = true; try { draw(await api('POST', url, {})); } catch (err) { toast(err.message, true); if (btn) btn.disabled = false; } };
+  const draw = (r) => {
+    clearTimeout(timer);
+    const a = r.analysis;
+    const online = r.canWeb && nb?.kind !== 'journal';
+    const again = (label) => el('button', { class: 'btn small', onclick: (e) => start(e.currentTarget) }, label);
+    if (r.status === 'running') {
+      const secs = Math.max(0, Math.round((Date.now() - new Date(r.startedAt)) / 1000));
+      box.replaceChildren(el('div', { class: 'ask-wait' }, el('span', { class: 'dots' }), `${online ? '正在读原文、查背景，再对照已有记录' : '正在对照已有记录'}… 已用 ${secs} 秒，可以先去看别的`));
+      poll();
+      return;
+    }
+    if (!a) {
+      const hint = !r.aiEnabled ? el('span', { class: 'hint' }, 'AI 未开启。', el('a', { class: 'more-btn', href: '#/settings', onclick: closePeek }, '去开启'))
+        : el('span', { class: 'hint' }, online ? '联网读原文、核对数字、查背景，再对照已有记录，约 1 分钟。这条记录会发给 AI。' : `对照已有记录，说清关联和下一步（${nb?.kind === 'journal' ? '日志类记录不联网' : '当前的 AI 方式不能联网'}）。`);
+      box.replaceChildren(el('div', { class: 'analysis-start' }, r.aiEnabled ? again('🔎 深入分析') : '', hint),
+        r.status === 'error' ? el('div', { class: 'ask-note err' }, `上次没成功：${r.error}`) : '');
+      return;
+    }
+    const body = el('div', { class: 'md analysis-body', html: renderMd(a.text) });
+    citeify(body, a.related || [], (x) => openPeek(x.path));
+    const meta = [a.at ? fmtShort(a.at) : '', a.web ? `联网读了 ${a.sources.length} 个来源` : '未联网', a.model || ''].filter(Boolean).join(' · ');
+    box.replaceChildren(
+      el('div', { class: 'analysis-head' }, el('span', { class: 'analysis-title' }, '深入分析'), el('span', { class: 'meta' }, meta), r.aiEnabled ? again('重新分析') : ''),
+      r.status === 'error' ? el('div', { class: 'ask-note err' }, `重新分析没成功：${r.error}。下面是上一次的结果。`) : '',
+      a.stale ? el('div', { class: 'ask-note' }, '正文在这次分析之后改过，可以重新分析。') : '',
+      body,
+      a.webError ? el('div', { class: 'ask-note' }, `这次没能联网（${a.webError}），只对照了笔记本里的记录。`) : '',
+      a.note ? el('div', { class: 'ask-note' }, a.note) : '',
+      a.limited ? el('div', { class: 'ask-note' }, '和其他记录的关联没有显示：其中有你这个身份读不到的记录。') : '',
+      a.sources?.length ? el('div', { class: 'md analysis-src', html: renderMd('读过的原文： ' + a.sources.map((u) => `<${u}>`).join(' ')) }) : '');
+  };
+  api('GET', url).then(draw).catch(() => {});
+  return box;
 }
 
 /** Array → chips, object → key: value chips, used for structured property values. */

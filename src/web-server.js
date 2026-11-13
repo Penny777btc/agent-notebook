@@ -13,10 +13,11 @@ import { listAgents, connectAgent, getAgent, serverEntry } from './agents.js';
 import { Router, capture, digest, organizeInbox } from './notebooks.js';
 import { metrics } from './metrics.js';
 import { ReadState } from './seen.js';
-import { AI_MODELS, AI_PROVIDERS, GROK_MODELS, aiSettings, testConnection } from './enrich.js';
+import { AI_MODELS, AI_PROVIDERS, GROK_MODELS, aiSettings, testConnection, webCapable } from './enrich.js';
 import { localDate } from './vault.js';
 import { REVIEW_FOLDER, reviewFacts, writeReview, listReviews, splitReview, weekOf, addDays } from './review.js';
 import { ask } from './ask.js';
+import { startAnalysis, analysisStatus } from './analyze.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -304,6 +305,24 @@ export function createApp({ vault, auth, backup }) {
       if (!question) return res.status(400).json({ error: 'question is required' });
       const r = await ask(vault, auth, question, { can: (p) => auth.can(req.principal, 'read', p), log: aiLog });
       res.json({ ...r, aiEnabled: aiSettings(auth).enabled });
+    } catch (err) { next(err); }
+  });
+  // one record read properly, on the owner's request: the original and its background from the web, then how it ties in
+  // with the records already here. It takes about a minute, so POST starts it and GET reports where it stands.
+  const analysisView = (req, r) => ({ ...r, aiEnabled: aiSettings(auth).enabled, canWeb: webCapable(auth) });
+  api.get('/analysis/*', guard('read', notePath), (req, res, next) => {
+    try { res.set('Cache-Control', 'no-store').json(analysisView(req, analysisStatus(vault, notePath(req), { can: (p) => auth.can(req.principal, 'read', p) }))); } catch (err) { next(err); }
+  });
+  api.post('/analysis/*', guard('write', notePath), (req, res, next) => {
+    try {
+      const rel = notePath(req);
+      const audit = req.audit;
+      const r = startAnalysis(vault, auth, rel, {
+        can: (p) => auth.can(req.principal, 'read', p), log: aiLog, web: req.body?.web === false ? false : undefined,
+        onDone: (a, p) => audit('analyze', p, { via: 'web', web: a?.web, sources: a?.sources.length, related: a?.related.length, ms: a?.ms }),
+        onError: (err, p) => audit('analyze:failed', p, { via: 'web', error: String(err.message).slice(0, 160) })
+      });
+      res.status(202).json(analysisView(req, r));
     } catch (err) { next(err); }
   });
   api.post('/move', guard('write', (r) => r.body.folder || ''), (req, res) => {
