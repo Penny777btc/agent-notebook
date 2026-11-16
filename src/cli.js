@@ -13,7 +13,7 @@ import { createApp } from './web-server.js';
 import { listAgents, connectAgent } from './agents.js';
 import { reviewFacts, writeReview, startReviewSchedule, weekOf, addDays } from './review.js';
 import { localDate } from './vault.js';
-import { analyze, startAutoAnalysis } from './analyze.js';
+import { analyze, startAutoAnalysis, backlog, runBacklog } from './analyze.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -45,6 +45,7 @@ Usage:
   agent-notebook backup init [REMOTE_URL] | now | status
   agent-notebook review  [--last | --from YYYY-MM-DD] [--facts]              write this week's review page (--last: the week before; --facts: print the numbers only)
   agent-notebook analyze NOTE_PATH [--offline]                               fetch a record's original text and read it: original, reading, background, ties to other records
+  agent-notebook analyze --backlog [--limit N] [--dry-run]                   the same for the older records of the notebooks set to fetch on their own, one at a time
   agent-notebook init    [--vault DIR]                                       create an empty vault with example boards
 
 Vault directory: --vault, $AGENT_NOTEBOOK_VAULT, ./vault (if exists), else ~/AgentNotebook`;
@@ -160,6 +161,20 @@ async function main() {
       return;
     }
     case 'analyze': {
+      if (flags.backlog) { // the older records of the `analyze: auto` notebooks, which the queue never reaches
+        const list = backlog(vault);
+        if (flags['dry-run']) { for (const r of list) console.log(r.path); return console.log(`${list.length} 条旧记录还没有原文`); }
+        console.log(`${list.length} 条旧记录还没有原文，一条一条来（每条约 1–2 分钟）`);
+        const r = await runBacklog(vault, auth, {
+          limit: flags.limit ? Number(flags.limit) : Infinity,
+          log: (e) => auth.audit({ name: 'ai' }, e.event, '', e),
+          onStep: (s) => {
+            auth.audit({ name: 'system' }, s.ok ? 'analyze' : 'analyze:failed', s.path, { via: 'backlog', ...(s.ok ? { ms: s.ms } : { error: String(s.error).slice(0, 200) }) });
+            console.log(`${new Date().toISOString().slice(11, 19)} ${s.i}/${s.of} ${s.ok ? `原文 ${s.chars} 字 · ${Math.round(s.ms / 1000)} 秒` : `没成功：${s.error}`} · ${s.path}`);
+          }
+        });
+        return console.log(`完成 ${r.done} 条，没成功 ${r.failed} 条，还剩 ${r.left} 条${r.stopped ? `\n${r.stopped}` : ''}`);
+      }
       if (!sub) return console.log(HELP);
       const a = await analyze(vault, auth, [sub, ...rest].join(' '), { web: flags.offline ? false : undefined, log: (e) => auth.audit({ name: 'ai' }, e.event, '', e) });
       auth.audit({ name: 'system' }, 'analyze', sub, { via: 'cli', web: a.web, sources: a.sources.length, related: a.related.length, ms: a.ms });

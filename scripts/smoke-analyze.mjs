@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { Vault } from '../src/vault.js';
 import { Auth } from '../src/auth.js';
 import { aiSettings, complete, webCapable } from '../src/enrich.js';
-import { analyze, readAnalysis, parseWebPart, parseOriginal, parseLocalPart, spread, startAnalysis, analysisStatus, analysisSettled, autoCandidates, autoTick, autoWaiting, autoStatus } from '../src/analyze.js';
+import { analyze, readAnalysis, parseWebPart, parseOriginal, parseLocalPart, spread, startAnalysis, analysisStatus, analysisSettled, autoCandidates, autoTick, autoWaiting, autoStatus, backlog, runBacklog } from '../src/analyze.js';
 import { createApp } from '../src/web-server.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'anb-analyze-'));
@@ -288,6 +288,24 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   assert.equal(autoWaiting(vault, n2.path, { now: later }), false);
   assert.equal(await autoTick(vault, auth, { now: new Date(Date.now() + 40 * 60000) }), null, 'twice is enough: it waits for the button');
   console.log('ok 10 automatic: owner-only switch, new linked records only, one at a time, two tries, a daily ceiling');
+
+  // ---- 11. the backlog: older records of those notebooks, taken one at a time on request ----
+  const future = new Date(Date.now() + 3 * 86400000); // from here every record above is older than the queue's window
+  assert.deepEqual(backlog(vault).map((r) => r.path), [], 'new records belong to the queue');
+  const stale = backlog(vault, { now: future }).map((r) => r.path);
+  assert.ok(stale.includes(n2.path) && !stale.includes(n1.path), 'with a link and no original stored, and only those');
+  fs.writeFileSync(`${out}.web.reply`, reply(WEB));
+  const steps = [];
+  const r1 = await runBacklog(vault, auth, { now: () => future, pauseMs: 0, onStep: (s) => steps.push(s) });
+  assert.deepEqual([r1.done, r1.failed, r1.left, r1.stopped], [stale.length, 0, 0, undefined]);
+  assert.ok(steps.every((s) => s.ok && s.chars > 0) && steps.length === stale.length);
+  assert.equal(readAnalysis(vault, vault.getNote(n2.path)).original[0].text, ORIGINAL);
+  for (let i = 0; i < 4; i++) vault.createNote({ folder: '快讯', title: `旧记录 ${i}`, body: `链接 https://x.com/someone/status/9${i}`, properties: { source: 'phone-agents' } });
+  fs.writeFileSync(`${out}.web.reply`, reply('permission required', { stopReason: 'cancelled' }));
+  const r2 = await runBacklog(vault, auth, { now: () => future, pauseMs: 0 });
+  assert.deepEqual([r2.done, r2.failed, r2.left], [0, 3, 4], 'three failures in a row end the run, and nothing is stored for them');
+  assert.ok(/连续三条失败/.test(r2.stopped));
+  console.log('ok 11 backlog: older linked records without an original, one at a time, stopping when the web is down');
 
   console.log('\nall analyze checks passed');
 } finally {

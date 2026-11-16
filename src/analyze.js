@@ -356,6 +356,51 @@ export function autoStatus(vault, { now = new Date(), cap = AUTO_DAILY_CAP } = {
   return { waiting: autoCandidates(vault, { now }).filter((c) => (st.tries[c.key]?.n || 0) < 2).length, today: st.count, cap };
 }
 
+/**
+ * The records the queue never reaches: in an `analyze: auto` notebook, older than the queue's window, with a link, and
+ * no original stored (never analysed, or analysed before originals were kept). Newest first. → [{ path, title, created }]
+ */
+export function backlog(vault, { now = new Date(), days = AUTO_DAYS } = {}) {
+  const out = [];
+  for (const nb of vault.listNotebooks().filter((n) => n.analyze === 'auto')) {
+    for (const n of vault.listNotes({ folder: nb.folder, recursive: false, limit: 5000 })) {
+      if (isNew(n.created, now, days)) continue; // the queue's own
+      const note = vault.getNote(n.path);
+      if (!hasLink(note) || readAnalysis(vault, note)?.original.length) continue;
+      out.push({ path: note.path, title: note.title, created: new Date(n.created || 0).getTime() || 0 });
+    }
+  }
+  return out.sort((a, b) => b.created - a.created);
+}
+
+/**
+ * Work through the backlog one record at a time → { done, failed, left, stopped? }. Nothing is stored for a record whose
+ * original could not be fetched, so a later run takes it again. Three failures in a row end the run: that is an outage
+ * or a used-up quota, not three bad links.
+ */
+export async function runBacklog(vault, auth, { limit = Infinity, pauseMs = 5000, log, onStep, now = () => new Date(), days = AUTO_DAYS } = {}) {
+  const list = backlog(vault, { now: now(), days });
+  let done = 0, failed = 0, streak = 0, i = 0;
+  for (const item of list) {
+    if (done + failed >= limit) break;
+    i += 1;
+    let note;
+    try { note = vault.getNote(item.path); } catch { continue; } // moved or deleted since the list was made
+    if (readAnalysis(vault, note)?.original.length) continue; // somebody pressed the button in the meantime
+    try {
+      const a = await analyze(vault, auth, item.path, { log, now: now(), requireWeb: true });
+      done += 1; streak = 0;
+      onStep?.({ ...item, i, of: list.length, ok: true, chars: a.original.filter((b) => !b.failed).reduce((n, b) => n + b.text.length, 0), ms: a.ms });
+    } catch (err) {
+      failed += 1; streak += 1;
+      onStep?.({ ...item, i, of: list.length, ok: false, error: err.message });
+      if (streak >= 3) return { done, failed, left: backlog(vault, { now: now(), days }).length, stopped: '连续三条失败，先停下：多半是联网或额度的问题，不是这几条记录的问题' };
+    }
+    if (pauseMs) await new Promise((r) => setTimeout(r, pauseMs));
+  }
+  return { done, failed, left: backlog(vault, { now: now(), days }).length };
+}
+
 /** Run the queue for as long as the server lives. */
 export function startAutoAnalysis(vault, auth, { intervalMs = 45000, firstDelayMs = 20000, ...opts } = {}) {
   const tick = () => autoTick(vault, auth, opts).catch((err) => opts.log?.({ event: 'ai:error', stage: 'analyze:auto', error: err.message }));
