@@ -20,7 +20,7 @@ const shiftDate = (iso, days) => { const d = new Date(iso + 'T12:00:00'); d.setD
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '';
 const fmtShort = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 const fmtClock = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
-const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries', 'concepts_hash'];
+const SYSTEM_PROPS = ['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries', 'concepts_hash', 'category'];
 const KIND_LABEL = { board: '看板', journal: '日志', pages: '页面集' };
 const encPath = (p) => p.split('/').map(encodeURIComponent).join('/');
 
@@ -882,28 +882,73 @@ function niceTicks(min, max, count = 4) {
 
 async function kanban(folder, dateFilter) {
   const board = await get(`/api/boards/${encPath(folder)}${dateFilter ? `?date=${dateFilter}` : ''}`);
+  const cats = board.categories || [];
+  // a board with categories can be laid out either way; the choice is kept per notebook on this device
+  const by = cats.length && localStorage.getItem('group:' + folder) === 'category' ? 'category' : 'status';
+  const setBy = (v) => { localStorage.setItem('group:' + folder, v); route(); };
+  const wrap = el('div');
+  if (cats.length) wrap.append(el('div', { class: 'toolbar', style: 'margin:0 0 10px' },
+    el('span', { class: 'muted', style: 'font-size:12.5px' }, '分组'),
+    el('div', { class: 'segmented' },
+      el('button', { class: 'btn small' + (by === 'status' ? ' active' : ''), onclick: () => setBy('status') }, '按状态'),
+      el('button', { class: 'btn small' + (by === 'category' ? ' active' : ''), onclick: () => setBy('category') }, '按类别'))));
+  const all = board.columns.flatMap((c) => c.cards);
+  // columns as { name, label, cards, patch }: `patch` is what dropping a card there writes
+  const UNPLACED = '未分类';
+  const columns = by === 'status'
+    ? board.columns.map((c) => ({ name: c.name, label: c.name, cards: c.cards, patch: { status: c.name }, add: { status: c.name } }))
+    // the unplaced cards come first while there are any: that column is the to-do, and it carries the sort button
+    : [{ name: '', label: UNPLACED, cards: all.filter((c) => !cats.includes(c.category)), patch: { category: null }, add: {}, unplaced: true },
+      ...cats.map((name) => ({ name, label: name, cards: all.filter((c) => c.category === name), patch: { category: name }, add: { category: name } }))].filter((c) => !c.unplaced || c.cards.length);
   const kb = el('div', { class: 'board' });
-  for (const col of board.columns) {
-    const colEl = el('div', { class: 'col', 'data-col': col.name });
-    colEl.append(el('div', { class: 'col-head' }, el('span', { class: 'chip status' }, col.name), el('span', { class: 'count' }, col.cards.length),
-      el('button', { class: 'mini-btn add', title: '在此列新建', onclick: () => newNoteDialog({ folder, columns: board.columns.map((c) => c.name), status: col.name }) }, '＋')));
-    for (const card of col.cards) colEl.append(cardEl(card));
+  for (const col of columns) {
+    const colEl = el('div', { class: 'col', 'data-col': col.label });
+    colEl.append(el('div', { class: 'col-head' }, el('span', { class: 'chip ' + (by === 'status' ? 'status' : col.unplaced ? '' : 'source') }, col.label), el('span', { class: 'count' }, col.cards.length),
+      col.unplaced && state.ai?.enabled ? sortButton(folder, col.cards.length) : null,
+      el('button', { class: 'mini-btn add', title: '在此列新建', onclick: () => newNoteDialog({ folder, columns: board.columns.map((c) => c.name), ...col.add }) }, '＋')));
+    for (const card of col.cards) colEl.append(cardEl(card, by === 'status' ? (cats.includes(card.category) ? { text: card.category, cls: 'source' } : null) : (card.status ? { text: card.status, cls: 'status' } : null)));
     if (!col.cards.length) colEl.append(el('div', { class: 'empty well' }, '空 · 把卡片拖到这里'));
     colEl.addEventListener('dragover', (e) => { e.preventDefault(); colEl.classList.add('drag-over'); });
     colEl.addEventListener('dragleave', () => colEl.classList.remove('drag-over'));
     colEl.addEventListener('drop', async (e) => {
       e.preventDefault(); colEl.classList.remove('drag-over');
       const p = e.dataTransfer.getData('text/plain'); if (!p) return;
-      try { await api('PATCH', notePath(p), { status: col.name }); toast(`已移动到「${col.name}」`); route(); } catch (err) { toast(err.message, true); }
+      try { await api('PATCH', notePath(p), col.patch); toast(`已移动到「${col.label}」`); route(); } catch (err) { toast(err.message, true); }
     });
     kb.append(colEl);
   }
-  return kb;
+  wrap.append(kb);
+  if (by === 'category') resumeSort(folder);
+  return wrap;
 }
-function cardEl(card) {
+
+/** "✨ AI 分类": sort the cards that sit in no category. It runs on the server for a minute or two; the page polls and redraws. */
+function sortButton(folder, n) {
+  return el('button', { class: 'mini-btn', 'data-sort': folder, title: `让 AI 把这 ${n} 张卡片分到各个类别里（看标题、标签和开头一句）`, onclick: async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = '分类中…';
+    try { await api('POST', `/api/categorize/${encPath(folder)}`); followSort(folder); } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = '✨ AI 分类'; }
+  } }, '✨ AI 分类');
+}
+let sortTimer = null;
+function followSort(folder) {
+  clearTimeout(sortTimer);
+  sortTimer = setTimeout(async () => {
+    if (!location.hash.startsWith(nbHref(folder))) return; // the owner moved on; the server finishes anyway
+    let st; try { st = await get(`/api/categorize/${encPath(folder)}`); } catch { return; }
+    if (st.status === 'running') { const b = document.querySelector('[data-sort]'); if (b) { b.disabled = true; b.textContent = `分类中… 还剩 ${st.left}`; } return followSort(folder); }
+    if (st.status === 'error') toast(st.error, true);
+    else if (st.result) toast(st.result.done ? `分好 ${st.result.done} 张${st.left ? `，${st.left} 张哪类都不合适` : ''}` : '这些卡片哪一类都不合适，可以在设置里加类别');
+    route();
+  }, 4000);
+}
+/** Coming back to the board while a sort is still running: pick the polling up again. */
+async function resumeSort(folder) {
+  try { const st = await get(`/api/categorize/${encPath(folder)}`); if (st.status === 'running') { const b = document.querySelector('[data-sort]'); if (b) { b.disabled = true; b.textContent = `分类中… 还剩 ${st.left}`; } followSort(folder); } } catch { /* a token without access simply has no button */ }
+}
+function cardEl(card, extra) {
   const c = el('div', { class: 'card', draggable: 'true', 'data-new': newAttr(card.path), onclick: () => openPeek(card.path) },
     el('div', { class: 't' }, card.title), card.excerpt && card.excerpt !== card.title && el('div', { class: 'ex' }, cleanExcerpt(card.excerpt, 200)),
-    el('div', { class: 'meta' }, card.tags.slice(0, 4).map((t) => el('span', { class: 'chip' }, t)), chipSource(card.source), el('span', { class: 'date' }, card.date)));
+    el('div', { class: 'meta' }, extra && el('span', { class: 'chip ' + extra.cls }, extra.text), card.tags.slice(0, extra ? 3 : 4).map((t) => el('span', { class: 'chip' }, t)), chipSource(card.source), el('span', { class: 'date' }, card.date)));
   c.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.path); c.classList.add('dragging'); });
   c.addEventListener('dragend', () => c.classList.remove('dragging'));
   return c;
@@ -973,6 +1018,7 @@ async function noteEditor(note, { onSaved } = {}) {
   if (nb?.kind === 'board' && nb.columns) {
     row('状态', '◎', el('select', { onchange: (e) => save({ status: e.target.value }) }, nb.columns.map((c) => el('option', { value: c, selected: c === p.status }, c))));
   } else if (p.status) row('状态', '◎', el('span', { class: 'chip status' }, p.status));
+  if (nb?.categories?.length) row('类别', '▦', el('select', { onchange: (e) => save({ category: e.target.value || null }) }, el('option', { value: '', selected: !nb.categories.includes(p.category) }, '未分类'), nb.categories.map((c) => el('option', { value: c, selected: c === p.category }, c))));
   row('标签', '#', el('input', { value: (p.tags || []).join(', '), placeholder: '逗号分隔', onblur: (e) => { const v = e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean); if (JSON.stringify(v) !== JSON.stringify(p.tags || [])) save({ tags: v }); } }));
   row('来源', '🤖', p.sources?.length ? p.sources.map((s) => chipSource(s)) : p.source ? chipSource(p.source) : el('span', { class: 'muted' }, '—'));
   row('日期', '📅', el('input', { type: 'date', value: p.date || '', onchange: (e) => save({ date: e.target.value }) }));
@@ -1148,7 +1194,7 @@ function modal(title, content, { okLabel = '确定', onOk } = {}) {
   return close;
 }
 
-function newNoteDialog({ folder = '', columns, status } = {}) {
+function newNoteDialog({ folder = '', columns, status, category } = {}) {
   const title = el('input', { type: 'text', placeholder: '标题' });
   const folderIn = el('select', {}, el('option', { value: '', selected: !folder }, '根目录'), state.notebooks.filter((n) => n.kind !== 'journal').map((n) => el('option', { value: n.folder, selected: n.folder === folder }, `${n.icon} ${n.title}`)));
   const statusSel = columns ? el('select', {}, columns.map((c) => el('option', { value: c, selected: c === status }, c))) : null;
@@ -1159,7 +1205,7 @@ function newNoteDialog({ folder = '', columns, status } = {}) {
     okLabel: '创建',
     onOk: async () => {
       if (!title.value.trim()) { title.focus(); return false; }
-      const n = await api('POST', '/api/notes', { folder: folderIn.value, title: title.value.trim(), body: body.value, status: statusSel?.value, tags: tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
+      const n = await api('POST', '/api/notes', { folder: folderIn.value, title: title.value.trim(), body: body.value, status: statusSel?.value, ...(category ? { category } : {}), tags: tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
       toast('已创建'); await loadSidebar();
       if (columns) { route(); openPeek(n.path); } else location.hash = `#/note/${encodeURIComponent(n.path)}`;
     }
@@ -1174,7 +1220,8 @@ function notebookDialog({ folder, meta } = {}) {
   const icon = el('input', { type: 'text', value: meta?.icon || '📁', style: 'width:60px' });
   const kind = el('select', {}, ['pages', 'journal', 'board'].map((k) => el('option', { value: k, selected: (meta?.kind || 'pages') === k }, `${KIND_LABEL[k]} — ${k === 'journal' ? '一天一页，按时间追加（健康、财务）' : k === 'board' ? '卡片 + 列（看板）' : '一条内容一页（阅读、思维）'}`)));
   const cols = el('input', { type: 'text', value: (meta?.columns || ['待处理', '进行中', '已完成']).join(', ') });
-  const colsRow = [el('label', {}, '列'), cols];
+  const cats = el('input', { type: 'text', value: (meta?.categories || []).join(', '), placeholder: '看板的第二种分法，逗号分隔：AI, 财经, 内容创作（留空 = 不分类别）' });
+  const colsRow = [el('label', {}, '列'), cols, el('label', {}, '类别'), cats];
   const kw = el('input', { type: 'text', value: (meta?.keywords || []).join(', '), placeholder: '用于自动归类，逗号分隔：睡眠, 运动, 体重' });
   const rt = el('input', { type: 'text', value: (meta?.route_tags || []).join(', '), placeholder: '带这些标签的内容直接进这里，逗号分隔：晨报, 快讯' });
   const viewIn = el('select', {}, [['', '按形态默认'], ['timeline', '时间线'], ['table', '表格'], ['kanban', '看板（仅看板形态）'], ['chart', '图表（需要有数字属性）']].map(([v, l]) => el('option', { value: v, selected: (meta?.view || '') === v }, l)));
@@ -1187,7 +1234,7 @@ function notebookDialog({ folder, meta } = {}) {
     okLabel: editing ? '保存' : '创建',
     onOk: async () => {
       const f = folderIn.value.trim(); if (!f) return false;
-      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), route_tags: rt.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), view: viewIn.value || null, description: desc.value.trim(), columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined, analyze: autoChk.checked && kind.value !== 'journal' ? 'auto' : null };
+      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), route_tags: rt.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), view: viewIn.value || null, description: desc.value.trim(), categories: kind.value === 'board' ? cats.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : [], columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined, analyze: autoChk.checked && kind.value !== 'journal' ? 'auto' : null };
       if (editing) await api('PATCH', `/api/notebooks/${encPath(f)}`, payload); else await api('POST', '/api/notebooks', { folder: f, ...payload });
       await loadSidebar(); location.hash = nbHref(f); route();
     }

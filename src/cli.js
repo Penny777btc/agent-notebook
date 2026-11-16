@@ -14,6 +14,7 @@ import { listAgents, connectAgent } from './agents.js';
 import { reviewFacts, writeReview, startReviewSchedule, weekOf, addDays } from './review.js';
 import { localDate } from './vault.js';
 import { analyze, startAutoAnalysis, backlog, runBacklog } from './analyze.js';
+import { categorize } from './categorize.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -46,6 +47,7 @@ Usage:
   agent-notebook review  [--last | --from YYYY-MM-DD] [--facts]              write this week's review page (--last: the week before; --facts: print the numbers only)
   agent-notebook analyze NOTE_PATH [--offline]                               fetch a record's original text and read it: original, reading, background, ties to other records
   agent-notebook analyze --backlog [--limit N] [--dry-run]                   the same for the older records of the notebooks set to fetch on their own, one at a time
+  agent-notebook categorize NOTEBOOK                                         sort the cards of a board into the categories set in its settings
   agent-notebook init    [--vault DIR]                                       create an empty vault with example boards
 
 Vault directory: --vault, $AGENT_NOTEBOOK_VAULT, ./vault (if exists), else ~/AgentNotebook`;
@@ -182,6 +184,13 @@ async function main() {
       console.log(`${a.text}\n\n— ${a.model} · 原文 ${a.original.filter((b) => !b.failed).reduce((n, b) => n + b.text.length, 0)} 字 · ${a.web ? `联网，${a.sources.length} 个来源` : `未联网${a.webError ? '（' + a.webError + '）' : ''}`} · 关联 ${a.related.length} 条 · ${a.ms} ms`);
       for (const u of a.sources) console.log('  ' + u);
       return;
+    }
+    case 'categorize': { // sort the cards of a board that sit in none of its categories
+      if (!sub) return console.log(HELP);
+      const folder = [sub, ...rest].join(' ');
+      const r = await categorize(vault, auth, folder, { log: (e) => auth.audit({ name: 'ai' }, e.event, '', e) });
+      auth.audit({ name: 'system' }, 'categorize', folder, { via: 'cli', ...r });
+      return console.log(`分好 ${r.done} 张，没分的 ${r.skipped} 张，还剩 ${r.left} 张没有类别`);
     }
     case 'backup': {
       if (sub === 'init') console.log(await backup.init(rest[0]));

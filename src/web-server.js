@@ -18,6 +18,7 @@ import { localDate } from './vault.js';
 import { REVIEW_FOLDER, reviewFacts, writeReview, listReviews, splitReview, weekOf, addDays } from './review.js';
 import { ask } from './ask.js';
 import { startAnalysis, analysisStatus, autoWaiting } from './analyze.js';
+import { startCategorize, categorizeStatus } from './categorize.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -199,6 +200,18 @@ export function createApp({ vault, auth, backup }) {
       .map((n) => meta.kind === 'journal' || req.query.bodies === '1' ? { ...n, body: vault.getNote(n.path).body } : n);
     res.json({ ...meta, notes, total: notes.length });
   });
+  // categories: sort the cards nobody placed (the board's "按类别" view starts this and polls)
+  api.post('/categorize/*', guard('write', notePath), (req, res) => {
+    const folder = notePath(req);
+    const r = startCategorize(vault, auth, folder, {
+      log: (e) => auth.audit({ name: 'ai' }, e.event, '', e),
+      onDone: (x) => auth.audit({ name: 'system' }, 'categorize', folder, { via: 'web', done: x.done, skipped: x.skipped, left: x.left }),
+      onError: (err) => auth.audit({ name: 'system' }, 'categorize:failed', folder, { via: 'web', error: String(err.message).slice(0, 200) })
+    });
+    req.audit('categorize', folder, { via: 'web' });
+    res.status(202).json(r);
+  });
+  api.get('/categorize/*', guard('read', notePath), (req, res) => res.json(categorizeStatus(vault, notePath(req))));
   api.patch('/notebooks/*', guard('write', notePath), (req, res) => {
     const nb = vault.updateNotebook(notePath(req), ownerOnly(req));
     req.audit('update_notebook', nb.folder, { via: 'web', fields: Object.keys(req.body) });

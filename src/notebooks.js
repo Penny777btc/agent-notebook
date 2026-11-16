@@ -6,6 +6,7 @@ import { localDate } from './vault.js';
 import { extractFields } from './metrics.js';
 import { NotebookProfiles, extractNumbers } from './content.js';
 import { enrich as aiEnrich, aiSettings } from './enrich.js';
+import { categoryFromTags, categorizeSoon } from './categorize.js';
 import { bodyHash } from './relations.js';
 
 const INBOX_FOLDER = '收件箱';
@@ -266,7 +267,10 @@ export async function capture(vault, router, { text, title, notebook, tags = [],
     const r = vault.appendJournal(folder, { title: titleForEntry, text, source, tags, properties: entryProps, date });
     note = r; entry = r.entry;
   } else {
-    note = vault.createNote({ folder, title, body: text, properties: { ...properties, ...common } });
+    // a board with categories: a tag that names one settles it; otherwise the unplaced cards are sorted a minute from now
+    const category = meta.categories.length && !properties.category ? categoryFromTags(meta.categories, tags) : null;
+    note = vault.createNote({ folder, title, body: text, properties: { ...properties, ...(category ? { category } : {}), ...common } });
+    if (meta.categories.length && !category && !meta.categories.includes(properties.category) && aiOn) categorizeSoon(vault, auth, folder, { log });
   }
 
   if (ai?.concepts?.length) {

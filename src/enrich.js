@@ -253,7 +253,7 @@ export async function testConnection(auth) {
   return { ok: true, provider: s.provider, model: res.model, ms: Date.now() - started, reply: res.text.slice(0, 40) };
 }
 
-function parseJson(text) {
+export function parseJson(text) {
   const t = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
   try { return JSON.parse(t); } catch { /* fall through */ }
   const m = t.match(/\{[\s\S]*\}/);

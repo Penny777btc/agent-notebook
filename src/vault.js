@@ -7,7 +7,7 @@ import matter from 'gray-matter';
 import { fieldsLine, ENTRY_HEADING_RE, journalEntries } from './metrics.js';
 
 export const DEFAULT_COLUMNS = ['待处理', '进行中', '已完成'];
-const SUMMARY_SYSTEM_KEYS = new Set(['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries']);
+const SUMMARY_SYSTEM_KEYS = new Set(['title', 'status', 'tags', 'source', 'sources', 'date', 'created', 'updated', 'captured', 'suggested', 'entries', 'category']);
 const NOTE_EXT = '.md';
 const BOARD_FILE = '_board.md';
 const NOTEBOOK_FILE = '_notebook.md';
@@ -235,6 +235,8 @@ export class Vault {
       route_tags: cleanTags(d.route_tags),
       view: NOTEBOOK_VIEWS.includes(d.view) ? d.view : null,
       columns: kind === 'board' ? (Array.isArray(d.columns) && d.columns.length ? d.columns : DEFAULT_COLUMNS) : null,
+      // categories: a second way to sort the cards of a board (AI, 财经, …), next to the status columns
+      categories: kind === 'journal' ? [] : cleanCategories(d.categories),
       inbox: !!d.inbox,
       // auto: false keeps the router and the AI from filing captures here (e.g. the generated weekly reviews)
       auto: d.auto !== false,
@@ -262,13 +264,13 @@ export class Vault {
     return this.listNotebooks().find((n) => n.inbox)?.folder || null;
   }
 
-  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, inbox = false, auto, analyze, order }) {
+  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, categories, inbox = false, auto, analyze, order }) {
     if (!folder) throw new VaultError('folder is required', 400);
     if (!NOTEBOOK_KINDS.includes(kind)) throw new VaultError(`kind must be one of ${NOTEBOOK_KINDS.join(', ')}`, 400);
     const dirAbs = this.resolve(folder);
     fs.mkdirSync(dirAbs, { recursive: true });
     if (this.isNotebook(folder)) throw new VaultError(`Notebook already exists: ${folder}`, 409);
-    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, auto: auto === false ? false : undefined, analyze: analyze === 'auto' ? 'auto' : undefined, order });
+    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, categories: kind !== 'journal' && cleanCategories(categories).length ? cleanCategories(categories) : undefined, inbox: inbox || undefined, auto: auto === false ? false : undefined, analyze: analyze === 'auto' ? 'auto' : undefined, order });
     fs.writeFileSync(path.join(dirAbs, NOTEBOOK_FILE), matter.stringify('\n' + description + '\n', data));
     return this.getNotebookMeta(folder);
   }
@@ -284,6 +286,7 @@ export class Vault {
       keywords: patch.keywords ?? meta.keywords,
       ...routing({ route_tags: patch.route_tags ?? meta.route_tags, view: patch.view !== undefined ? patch.view : meta.view }),
       columns: (patch.kind ?? meta.kind) === 'board' ? (patch.columns ?? meta.columns ?? DEFAULT_COLUMNS) : undefined,
+      categories: (patch.kind ?? meta.kind) !== 'journal' && cleanCategories(patch.categories ?? meta.categories).length ? cleanCategories(patch.categories ?? meta.categories) : undefined,
       inbox: (patch.inbox ?? meta.inbox) || undefined,
       auto: (patch.auto ?? meta.auto) === false ? false : undefined,
       analyze: (patch.analyze !== undefined ? patch.analyze : meta.analyze) === 'auto' ? 'auto' : undefined,
@@ -510,6 +513,7 @@ function summarize(note) {
     folder: note.folder,
     title: note.title,
     status: p.status,
+    category: typeof p.category === 'string' && p.category.trim() ? p.category.trim() : null,
     tags: Array.isArray(p.tags) ? p.tags : [],
     source: p.source,
     date: p.date || (p.created || '').slice(0, 10),
@@ -540,6 +544,11 @@ export function plainText(md) {
 }
 
 /** Tags as the owner typed them: trimmed, without a leading #, no empties or duplicates (compared case-insensitively). */
+/** A notebook's categories as written by hand: short names, no repeats, a dozen at most. */
+function cleanCategories(v) {
+  return Array.isArray(v) ? [...new Set(v.map((c) => String(c ?? '').trim().slice(0, 20)).filter(Boolean))].slice(0, 12) : [];
+}
+
 function cleanTags(v) {
   const out = new Map();
   for (const t of Array.isArray(v) ? v : []) {
