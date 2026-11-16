@@ -66,6 +66,9 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   assert.ok(w.ok && w.text.startsWith('## 解读') && !w.text.includes('SOURCES') && !w.text.includes('我先打开') && !w.text.includes('Five years'));
   assert.deepEqual(parseOriginal(w.original), [{ url: 'https://x.com/someone/status/1', meta: '@someone · 2026-11-12', text: ORIGINAL }], 'the original comes out per link, word for word');
   assert.deepEqual(parseOriginal('### https://a.example/x\n没能打开。\n\n### <https://b.example/y>\nA first line that ends with a full stop.\nSecond line.'), [{ url: 'https://a.example/x', text: '没能打开。', failed: true }, { url: 'https://b.example/y', text: 'A first line that ends with a full stop.\nSecond line.' }]);
+  const glued = parseWebPart('我先打开记录里的两条原文链接，把帖子内容读回来再按三节整理。## 原文\n\n### https://a.example/x\nThe post itself, word for word.\n\n## 解读\n- 一条足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读。\n\n## 背景\n- 背景\n\nSOURCES: https://a.example/x');
+  assert.equal(glued.ok, true, 'a remark run straight into the first heading does not cost the original');
+  assert.equal(parseOriginal(glued.original)[0].text, 'The post itself, word for word.');
   assert.equal(parseWebPart('## 原文要点\n- 旧格式的一条细节，写得足够长足够长足够长足够长足够长足够长足够长足够长足够长。\n\n## 背景\n- 别的').ok, false, 'the older heading is not the original');
   const tail = parseWebPart('## 原文\n### https://a.example/x\nSOURCES: are overrated, the post says.\n\n## 解读\n- 一条足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读。\n\n## 背景\n- 背景\n\nSOURCES: https://a.example/x');
   assert.ok(tail.ok && tail.original.includes('are overrated') && tail.sources.length === 1, 'a SOURCES line inside the copied text is not the end');

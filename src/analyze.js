@@ -99,7 +99,8 @@ const looksLikePlan = (t) => t.length < 160 && (isChatter(t) || /^(我先|我来
  * taken off; `original` is what stood under "## 原文" (the copied text, per link), `text` the two sections after it.
  */
 export function parseWebPart(raw) {
-  let t = String(raw || '').trim();
+  // the model sometimes runs a remark straight into the first heading ("我先打开链接……。## 原文"): give each of the three headings its own line
+  let t = String(raw || '').trim().replace(new RegExp(`([^\\n#])[ \\t]*((?:${H.original}|${H.reading}|${H.background})[ \\t]*(?:\\n|$))`, 'g'), '$1\n$2');
   const first = [t.search(line(H.original)), t.search(line(H.reading))].filter((i) => i >= 0);
   if (first.length && Math.min(...first) > 0) t = t.slice(Math.min(...first));
   let sources = [];
@@ -208,7 +209,7 @@ export async function analyze(vault, auth, rel, { can, log, now = new Date(), we
       else webError = '联网这一步没有按格式写出内容';
     } catch (err) { webError = err.message; log?.({ event: 'ai:error', stage: 'analyze:web', error: err.message }); }
     // on its own schedule the point is the original: without it nothing is stored, and the record is tried again later
-    if (requireWeb && !webPart) throw Object.assign(new Error(`没能读到原文：${webError}`), { status: 502 });
+    if (requireWeb && !webPart?.blocks.length) throw Object.assign(new Error(`没能读到原文：${webError || '联网这一步没有带回原文'}`), { status: 502 });
   }
 
   // B. the vault: what this record has to do with the ones already there, and what it means for the owner
