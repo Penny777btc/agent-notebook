@@ -238,6 +238,8 @@ export class Vault {
       inbox: !!d.inbox,
       // auto: false keeps the router and the AI from filing captures here (e.g. the generated weekly reviews)
       auto: d.auto !== false,
+      // analyze: auto → a new record with a link gets its original text fetched and read on its own (never a journal: health and money stay offline)
+      analyze: d.analyze === 'auto' && kind !== 'journal' && d.auto !== false ? 'auto' : null,
       order: typeof d.order === 'number' ? d.order : 100
     };
   }
@@ -260,13 +262,13 @@ export class Vault {
     return this.listNotebooks().find((n) => n.inbox)?.folder || null;
   }
 
-  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, inbox = false, auto, order }) {
+  createNotebook({ folder, title, icon, kind = 'pages', description = '', keywords = [], route_tags, view, columns, inbox = false, auto, analyze, order }) {
     if (!folder) throw new VaultError('folder is required', 400);
     if (!NOTEBOOK_KINDS.includes(kind)) throw new VaultError(`kind must be one of ${NOTEBOOK_KINDS.join(', ')}`, 400);
     const dirAbs = this.resolve(folder);
     fs.mkdirSync(dirAbs, { recursive: true });
     if (this.isNotebook(folder)) throw new VaultError(`Notebook already exists: ${folder}`, 409);
-    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, auto: auto === false ? false : undefined, order });
+    const data = stripUndefined({ title: title || path.basename(folder), icon, kind, keywords, ...routing({ route_tags, view }), columns: kind === 'board' ? (columns?.length ? columns : DEFAULT_COLUMNS) : undefined, inbox: inbox || undefined, auto: auto === false ? false : undefined, analyze: analyze === 'auto' ? 'auto' : undefined, order });
     fs.writeFileSync(path.join(dirAbs, NOTEBOOK_FILE), matter.stringify('\n' + description + '\n', data));
     return this.getNotebookMeta(folder);
   }
@@ -284,6 +286,7 @@ export class Vault {
       columns: (patch.kind ?? meta.kind) === 'board' ? (patch.columns ?? meta.columns ?? DEFAULT_COLUMNS) : undefined,
       inbox: (patch.inbox ?? meta.inbox) || undefined,
       auto: (patch.auto ?? meta.auto) === false ? false : undefined,
+      analyze: (patch.analyze !== undefined ? patch.analyze : meta.analyze) === 'auto' ? 'auto' : undefined,
       order: patch.order ?? meta.order
     });
     fs.writeFileSync(path.join(abs, NOTEBOOK_FILE), matter.stringify('\n' + (patch.description ?? meta.description) + '\n', data));

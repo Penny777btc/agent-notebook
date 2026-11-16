@@ -126,7 +126,7 @@ export function buildMcpServer({ vault, auth, principal, hints = {} }) {
       columns: z.array(z.string()).optional()
     }
   }, guarded('write', (a) => a.folder, function create_notebook(args) {
-    return vault.createNotebook(args);
+    return vault.createNotebook({ ...args, analyze: undefined }); // sending a notebook's records online on their own is the owner's switch, not an agent's
   }));
 
   server.registerTool('notebook_list_boards', {

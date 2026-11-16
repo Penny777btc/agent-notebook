@@ -1042,7 +1042,7 @@ async function noteEditor(note, { onSaved } = {}) {
   return page;
 }
 
-/** 「深入分析」 under a record: start it, wait for it, show it. The result is kept beside the note, never written into it. */
+/** 「原文与解读」 under a record: start it, wait for it, show the fetched original and the reading of it. The result is kept beside the note, never written into it. */
 function analysisPanel(note, nb) {
   const box = el('section', { class: 'analysis' });
   const url = '/api/analysis/' + encPath(note.path);
@@ -1056,24 +1056,29 @@ function analysisPanel(note, nb) {
     const again = (label) => el('button', { class: 'btn small', onclick: (e) => start(e.currentTarget) }, label);
     if (r.status === 'running') {
       const secs = Math.max(0, Math.round((Date.now() - new Date(r.startedAt)) / 1000));
-      box.replaceChildren(el('div', { class: 'ask-wait' }, el('span', { class: 'dots' }), `${online ? '正在读原文、查背景，再对照已有记录' : '正在对照已有记录'}… 已用 ${secs} 秒，可以先去看别的`));
+      box.replaceChildren(el('div', { class: 'ask-wait' }, el('span', { class: 'dots' }), `${online ? '正在抓取原文、解读、查背景，再对照已有记录' : '正在对照已有记录'}… 已用 ${secs} 秒，可以先去看别的`));
       poll();
       return;
     }
     if (!a) {
       const hint = !r.aiEnabled ? el('span', { class: 'hint' }, 'AI 未开启。', el('a', { class: 'more-btn', href: '#/settings', onclick: closePeek }, '去开启'))
-        : el('span', { class: 'hint' }, online ? '联网读原文、核对数字、查背景，再对照已有记录，约 1 分钟。这条记录会发给 AI。' : `对照已有记录，说清关联和下一步（${nb?.kind === 'journal' ? '日志类记录不联网' : '当前的 AI 方式不能联网'}）。`);
-      box.replaceChildren(el('div', { class: 'analysis-start' }, r.aiEnabled ? again('🔎 深入分析') : '', hint),
+        : r.queued ? el('span', { class: 'hint' }, '这个笔记本会自动抓取原文并解读，几分钟内轮到这一条。也可以现在就抓。')
+        : el('span', { class: 'hint' }, online ? '打开记录里的链接，把原文抓回来，再用中文解读、查背景、对照已有记录，约 1–2 分钟。这条记录会发给 AI。' : `对照已有记录，说清关联和下一步（${nb?.kind === 'journal' ? '日志类记录不联网' : '当前的 AI 方式不能联网'}）。`);
+      box.replaceChildren(el('div', { class: 'analysis-start' }, r.aiEnabled ? again(online ? '📄 抓取原文并解读' : '🔎 深入分析') : '', hint),
         r.status === 'error' ? el('div', { class: 'ask-note err' }, `上次没成功：${r.error}`) : '');
+      if (r.queued) { clearTimeout(timer); timer = setTimeout(async () => { if (!box.isConnected) return; try { draw(await api('GET', url)); } catch { /* next look */ } }, 20000); }
       return;
     }
     const body = el('div', { class: 'md analysis-body', html: renderMd(a.text) });
     citeify(body, a.related || [], (x) => openPeek(x.path));
-    const meta = [a.at ? fmtShort(a.at) : '', a.web ? `联网读了 ${a.sources.length} 个来源` : '未联网', a.model || ''].filter(Boolean).join(' · ');
+    const got = (a.original || []).filter((b) => !b.failed);
+    const meta = [a.at ? fmtShort(a.at) : '', got.length ? `原文 ${got.reduce((n, b) => n + b.text.length, 0).toLocaleString('en-US')} 字` : a.web ? `联网读了 ${a.sources.length} 个来源` : '未联网', a.model || ''].filter(Boolean).join(' · ');
     box.replaceChildren(
-      el('div', { class: 'analysis-head' }, el('span', { class: 'analysis-title' }, '深入分析'), el('span', { class: 'meta' }, meta), r.aiEnabled ? again('重新分析') : ''),
+      el('div', { class: 'analysis-head' }, el('span', { class: 'analysis-title' }, a.web ? '原文与解读' : '深入分析'), el('span', { class: 'meta' }, meta), r.aiEnabled ? again(online ? '重新抓取' : '重新分析') : ''),
       r.status === 'error' ? el('div', { class: 'ask-note err' }, `重新分析没成功：${r.error}。下面是上一次的结果。`) : '',
       a.stale ? el('div', { class: 'ask-note' }, '正文在这次分析之后改过，可以重新分析。') : '',
+      ...(a.original || []).map(originalBlock),
+      a.web && !got.length && online ? el('div', { class: 'ask-note' }, (a.original || []).length ? '原文没能抓回来，下面的解读来自搜索到的其他来源。' : '这一次没有存下原文（可能是旧版本的分析），点「重新抓取」把原文抓回来。') : '',
       body,
       a.webError ? el('div', { class: 'ask-note' }, `这次没能联网（${a.webError}），只对照了笔记本里的记录。`) : '',
       a.note ? el('div', { class: 'ask-note' }, a.note) : '',
@@ -1082,6 +1087,25 @@ function analysisPanel(note, nb) {
   };
   api('GET', url).then(draw).catch(() => {});
   return box;
+}
+
+/** One fetched original: where it is from, then the text exactly as it was copied — plain text, never rendered as Markdown. Long ones open on request. */
+function originalBlock(b) {
+  const ok = /^https?:\/\//i.test(b.url);
+  let host = b.url;
+  try { host = new URL(b.url).hostname.replace(/^www\./, ''); } catch { /* shown as it is */ }
+  const text = el('div', { class: 'original-text' }, b.text);
+  const wrap = el('div', { class: 'original' },
+    el('div', { class: 'original-head' }, el('span', { class: 'analysis-title' }, '原文'),
+      ok ? el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer' }, host) : el('span', {}, host),
+      el('span', { class: 'meta' }, [b.meta, b.failed ? '' : `${b.text.length.toLocaleString('en-US')} 字`].filter(Boolean).join(' · '))),
+    b.failed ? el('div', { class: 'ask-note' }, '这个链接没能打开。') : text);
+  if (!b.failed && b.text.length > 600) {
+    text.classList.add('clamp');
+    const more = el('button', { class: 'more-btn original-more', onclick: () => { more.textContent = text.classList.toggle('clamp') ? '展开全文 ↓' : '收起 ↑'; } }, '展开全文 ↓');
+    wrap.append(more);
+  }
+  return wrap;
 }
 
 /** Array → chips, object → key: value chips, used for structured property values. */
@@ -1155,13 +1179,15 @@ function notebookDialog({ folder, meta } = {}) {
   const rt = el('input', { type: 'text', value: (meta?.route_tags || []).join(', '), placeholder: '带这些标签的内容直接进这里，逗号分隔：晨报, 快讯' });
   const viewIn = el('select', {}, [['', '按形态默认'], ['timeline', '时间线'], ['table', '表格'], ['kanban', '看板（仅看板形态）'], ['chart', '图表（需要有数字属性）']].map(([v, l]) => el('option', { value: v, selected: (meta?.view || '') === v }, l)));
   const desc = el('textarea', { class: 'body-edit', style: 'min-height:70px;border:1px solid var(--border);border-radius:6px;padding:8px', placeholder: '什么内容属于这里？一句话。agent 和归类器都会参考。' }, meta?.description || '');
-  const syncCols = () => colsRow.forEach((n) => n.classList.toggle('hidden', kind.value !== 'board'));
+  const autoChk = el('input', { type: 'checkbox', checked: meta?.analyze === 'auto' });
+  const autoRow = [el('label', {}, '原文'), el('label', { class: 'check-row' }, autoChk, ' 新记录带链接时，自动把原文抓回来并解读（联网，每条约 1–2 分钟；适合公开内容，别给邮件、健康、财务开）')];
+  const syncCols = () => { colsRow.forEach((n) => n.classList.toggle('hidden', kind.value !== 'board')); autoRow.forEach((n) => n.classList.toggle('hidden', kind.value === 'journal' || meta?.auto === false)); };
   kind.onchange = syncCols; syncCols();
-  modal(editing ? `设置 · ${meta.title}` : '新建笔记本', el('div', { class: 'form' }, el('label', {}, '文件夹'), folderIn, el('label', {}, '名称'), title, el('label', {}, '图标'), icon, el('label', {}, '形态'), kind, ...colsRow, el('label', {}, '关键词'), kw, el('label', {}, '直达标签'), rt, el('label', {}, '默认视图'), viewIn, el('label', {}, '说明'), desc), {
+  modal(editing ? `设置 · ${meta.title}` : '新建笔记本', el('div', { class: 'form' }, el('label', {}, '文件夹'), folderIn, el('label', {}, '名称'), title, el('label', {}, '图标'), icon, el('label', {}, '形态'), kind, ...colsRow, el('label', {}, '关键词'), kw, el('label', {}, '直达标签'), rt, el('label', {}, '默认视图'), viewIn, ...autoRow, el('label', {}, '说明'), desc), {
     okLabel: editing ? '保存' : '创建',
     onOk: async () => {
       const f = folderIn.value.trim(); if (!f) return false;
-      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), route_tags: rt.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), view: viewIn.value || null, description: desc.value.trim(), columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined };
+      const payload = { title: title.value.trim() || f, icon: icon.value.trim() || '📁', kind: kind.value, keywords: kw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), route_tags: rt.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), view: viewIn.value || null, description: desc.value.trim(), columns: kind.value === 'board' ? cols.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined, analyze: autoChk.checked && kind.value !== 'journal' ? 'auto' : null };
       if (editing) await api('PATCH', `/api/notebooks/${encPath(f)}`, payload); else await api('POST', '/api/notebooks', { folder: f, ...payload });
       await loadSidebar(); location.hash = nbHref(f); route();
     }

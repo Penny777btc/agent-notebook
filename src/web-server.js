@@ -17,7 +17,7 @@ import { AI_MODELS, AI_PROVIDERS, GROK_MODELS, aiSettings, testConnection, webCa
 import { localDate } from './vault.js';
 import { REVIEW_FOLDER, reviewFacts, writeReview, listReviews, splitReview, weekOf, addDays } from './review.js';
 import { ask } from './ask.js';
-import { startAnalysis, analysisStatus } from './analyze.js';
+import { startAnalysis, analysisStatus, autoWaiting } from './analyze.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -185,8 +185,10 @@ export function createApp({ vault, auth, backup }) {
   });
   api.get('/tree', guard('read'), (req, res) => res.json(vault.listTree()));
   api.get('/notebooks', guard('read'), (req, res) => res.json(vault.listNotebooks().filter((n) => auth.can(req.principal, 'read', n.folder))));
+  // `analyze: auto` sends a notebook's new records online without anyone clicking: only an admin (the owner) may switch it
+  const ownerOnly = (req) => (auth.can(req.principal, 'admin') ? req.body : { ...req.body, analyze: undefined });
   api.post('/notebooks', guard('write', (r) => r.body.folder), (req, res) => {
-    const nb = vault.createNotebook(req.body);
+    const nb = vault.createNotebook(ownerOnly(req));
     req.audit('create_notebook', nb.folder, { via: 'web' });
     res.status(201).json(nb);
   });
@@ -198,7 +200,7 @@ export function createApp({ vault, auth, backup }) {
     res.json({ ...meta, notes, total: notes.length });
   });
   api.patch('/notebooks/*', guard('write', notePath), (req, res) => {
-    const nb = vault.updateNotebook(notePath(req), req.body);
+    const nb = vault.updateNotebook(notePath(req), ownerOnly(req));
     req.audit('update_notebook', nb.folder, { via: 'web', fields: Object.keys(req.body) });
     res.json(nb);
   });
@@ -309,7 +311,7 @@ export function createApp({ vault, auth, backup }) {
   });
   // one record read properly, on the owner's request: the original and its background from the web, then how it ties in
   // with the records already here. It takes about a minute, so POST starts it and GET reports where it stands.
-  const analysisView = (req, r) => ({ ...r, aiEnabled: aiSettings(auth).enabled, canWeb: webCapable(auth) });
+  const analysisView = (req, r) => ({ ...r, aiEnabled: aiSettings(auth).enabled, canWeb: webCapable(auth), ...(r.status === 'none' && webCapable(auth) && autoWaiting(vault, notePath(req)) ? { queued: true } : {}) });
   api.get('/analysis/*', guard('read', notePath), (req, res, next) => {
     try { res.set('Cache-Control', 'no-store').json(analysisView(req, analysisStatus(vault, notePath(req), { can: (p) => auth.can(req.principal, 'read', p) }))); } catch (err) { next(err); }
   });

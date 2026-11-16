@@ -1,5 +1,5 @@
-// Smoke test for 「深入分析」 (src/analyze.js): the two-step analysis of one record, its sidecar file, the job API and the
-// tool limits of the web step. Uses only a temp dir; the models are a local fake speaking the Messages API and a stand-in
+// Smoke test for 「原文与解读」 (src/analyze.js): the two-step analysis of one record (the original fetched word for word,
+// then read), its sidecar file, the job API, the tool limits of the web step and the automatic queue. Uses only a temp dir; the models are a local fake speaking the Messages API and a stand-in
 // `grok` on PATH, so no real AI call and no network request is made.
 // Run: node scripts/smoke-analyze.mjs
 import fs from 'node:fs';
@@ -10,12 +10,13 @@ import assert from 'node:assert/strict';
 import { Vault } from '../src/vault.js';
 import { Auth } from '../src/auth.js';
 import { aiSettings, complete, webCapable } from '../src/enrich.js';
-import { analyze, readAnalysis, parseWebPart, parseLocalPart, spread, startAnalysis, analysisStatus, analysisSettled } from '../src/analyze.js';
+import { analyze, readAnalysis, parseWebPart, parseOriginal, parseLocalPart, spread, startAnalysis, analysisStatus, analysisSettled, autoCandidates, autoTick, autoWaiting, autoStatus } from '../src/analyze.js';
 import { createApp } from '../src/web-server.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'anb-analyze-'));
 const LOCAL = '## 和已有记录的关联\n- 和之前记的 ETH 持仓复盘是同一个话题 [1]。\n- 和睡眠没有关系 [7]。\n\n## 对我意味着什么\n- 值得继续跟：可以做一期「拿了五年不涨」的选题。\n- 下一步：核对原帖的持仓截图。';
-const WEB = '我先打开链接看看。\n\n## 原文要点\n- 原帖说的是 2021 年买入的仓位，现在市值仍是 2 万美元。\n- 核对：记录写的是「买 $2 万」，原文是持仓市值 2 万美元，不是单价。\n\n## 背景\n- 作者是加密圈的讽刺账号。\n\nSOURCES: https://x.com/someone/status/1 https://example.com/a.';
+const ORIGINAL = 'ETH 2021: $20k\nETH 2026: $20k\n\nFive years of holding. **Number go sideways.**';
+const WEB = '我先打开链接看看。\n\n## 原文\n### https://x.com/someone/status/1\n@someone · 2026-11-12\n' + ORIGINAL + '\n\n## 解读\n- 原帖说的是 2021 年买入的仓位，现在市值仍是 2 万美元。\n- 核对：记录写的是「买 $2 万」，原文是持仓市值 2 万美元，不是单价。\n\n## 背景\n- 作者是加密圈的讽刺账号。\n\nSOURCES: https://x.com/someone/status/1 https://example.com/a.';
 let server, fake, mode = 'ok', calls = 0, lastUser = '', lastSystem = '';
 const oldPath = process.env.PATH, oldHome = process.env.HOME;
 try {
@@ -62,9 +63,14 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
 
   // 1. parsing: the preamble and the SOURCES line come off, the headings are required
   const w = parseWebPart(WEB);
-  assert.ok(w.ok && w.text.startsWith('## 原文要点') && !w.text.includes('SOURCES') && !w.text.includes('我先打开'));
+  assert.ok(w.ok && w.text.startsWith('## 解读') && !w.text.includes('SOURCES') && !w.text.includes('我先打开') && !w.text.includes('Five years'));
+  assert.deepEqual(parseOriginal(w.original), [{ url: 'https://x.com/someone/status/1', meta: '@someone · 2026-11-12', text: ORIGINAL }], 'the original comes out per link, word for word');
+  assert.deepEqual(parseOriginal('### https://a.example/x\n没能打开。\n\n### <https://b.example/y>\nA first line that ends with a full stop.\nSecond line.'), [{ url: 'https://a.example/x', text: '没能打开。', failed: true }, { url: 'https://b.example/y', text: 'A first line that ends with a full stop.\nSecond line.' }]);
+  assert.equal(parseWebPart('## 原文要点\n- 旧格式的一条细节，写得足够长足够长足够长足够长足够长足够长足够长足够长足够长。\n\n## 背景\n- 别的').ok, false, 'the older heading is not the original');
+  const tail = parseWebPart('## 原文\n### https://a.example/x\nSOURCES: are overrated, the post says.\n\n## 解读\n- 一条足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读足够长的解读。\n\n## 背景\n- 背景\n\nSOURCES: https://a.example/x');
+  assert.ok(tail.ok && tail.original.includes('are overrated') && tail.sources.length === 1, 'a SOURCES line inside the copied text is not the end');
   assert.deepEqual(w.sources, ['https://x.com/someone/status/1', 'https://example.com/a'], 'URLs lose their trailing punctuation');
-  assert.equal(parseWebPart('## 原文要点\n- 一条细节，写得足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长。\n\n## 互动要点\n- 别的').ok, false, 'a second section under another name is not accepted');
+  assert.equal(parseWebPart('## 原文\n### https://a.example/x\n原帖正文。\n\n## 解读\n- 一条细节，写得足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长足够长。\n\n## 互动要点\n- 别的').ok, false, 'a second section under another name is not accepted');
   assert.ok(parseLocalPart(`好的。\n${LOCAL}`).ok);
   assert.equal(parseLocalPart('我先看一下笔记本。').ok, false);
   // a daily card must not take every place among the related records
@@ -124,7 +130,8 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   fs.writeFileSync(`${out}.local.reply`, reply(LOCAL));
   const c = await analyze(vault, auth, back.path, {});
   assert.equal(c.web, true);
-  assert.ok(c.text.indexOf('## 原文要点') === 0 && c.text.indexOf('## 背景') > 0 && c.text.indexOf('## 和已有记录的关联') > c.text.indexOf('## 背景') && c.text.includes('核对：'));
+  assert.deepEqual(c.original, [{ url: 'https://x.com/someone/status/1', meta: '@someone · 2026-11-12', text: ORIGINAL }], 'the fetched original is stored and handed out on its own, unchanged');
+  assert.ok(c.text.indexOf('## 解读') === 0 && c.text.indexOf('## 背景') > 0 && c.text.indexOf('## 和已有记录的关联') > c.text.indexOf('## 背景') && c.text.includes('核对：'));
   assert.deepEqual(c.sources, ['https://x.com/someone/status/1', 'https://example.com/a']);
   const webArgs = fs.readFileSync(`${out}.web.args`, 'utf8').split('\n');
   const at = (args, flag) => args[args.indexOf(flag) + 1];
@@ -139,7 +146,7 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   assert.ok(webPrompt.includes('https://x.com/someone/status/1') && webPrompt.includes('资料核查助手'));
   assert.ok(!webPrompt.includes('私密内容') && !webPrompt.includes('ETH 持仓复盘') && !webPrompt.includes('<notes>'), 'no other record reaches the model that can go online');
   const localArgs = fs.readFileSync(`${out}.local.args`, 'utf8');
-  assert.ok(localArgs.includes('--disable-web-search') && localArgs.includes('</supplement>') && localArgs.includes('私密内容') && localArgs.includes('核对：记录写的是'), 'the vault step reads the other records and what the web step found, offline');
+  assert.ok(localArgs.includes('--disable-web-search') && localArgs.includes('</supplement>') && localArgs.includes('</original>') && localArgs.includes('Five years of holding') && localArgs.includes('私密内容') && localArgs.includes('核对：记录写的是'), 'the vault step reads the other records and what the web step found, offline');
   console.log('ok 5  grok: the web step sees one record and has web tools only; the vault step has the records and no tools');
 
   // 6. web step failures: a void allowlist is an error; a wrong format is asked again; with the web down the vault half still comes
@@ -150,10 +157,10 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   const d = await analyze(vault, auth, back.path, {});
   assert.equal(d.web, false);
   assert.match(d.webError, /工具限制没有生效/);
-  assert.ok(d.text.startsWith('## 和已有记录的关联') && !d.text.includes('原文要点'), 'what a run with unrestricted tools returned is thrown away');
+  assert.ok(d.text.startsWith('## 和已有记录的关联') && !d.text.includes('解读') && !d.original.length, 'what a run with unrestricted tools returned is thrown away');
   assert.ok(!fs.readFileSync(`${out}.local.args`, 'utf8').includes('</supplement>'));
   reset();
-  fs.writeFileSync(`${out}.web.reply.1`, reply('## 原文要点\n- 原帖有一张持仓截图，写明了买入时间和现在的市值，细节足够长。\n\n## 互动要点\n- 有人接梗。\n\nSOURCES: https://x.com/someone/status/1'));
+  fs.writeFileSync(`${out}.web.reply.1`, reply('## 原文\n### https://x.com/someone/status/1\n原帖正文。\n\n## 解读\n- 原帖有一张持仓截图，写明了买入时间和现在的市值，细节足够长。\n\n## 互动要点\n- 有人接梗。\n\nSOURCES: https://x.com/someone/status/1'));
   fs.writeFileSync(`${out}.web.reply`, reply(WEB)); fs.writeFileSync(`${out}.local.reply`, reply(LOCAL));
   const e = await analyze(vault, auth, back.path, {});
   assert.equal(count('web'), 2, 'asked again when the second section is not 背景');
@@ -206,7 +213,7 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   assert.equal(done.status, 'done');
   assert.ok(done.analysis.web && done.analysis.text.includes('## 对我意味着什么') && done.analysis.related.length === 1 && done.analysis.related[0].path === other.path);
   const seenByReader = (await call('GET', freshUrl, reader)).body;
-  assert.ok(seenByReader.analysis.limited && seenByReader.analysis.text.includes('## 原文要点') && !seenByReader.analysis.text.includes('关联') && !seenByReader.analysis.related.length, 'a folder-limited token gets the web half only');
+  assert.ok(seenByReader.analysis.limited && seenByReader.analysis.text.includes('## 解读') && seenByReader.analysis.original.length === 1 && !seenByReader.analysis.text.includes('关联') && !seenByReader.analysis.related.length, 'a folder-limited token gets the web half only');
   assert.ok(auth.readAudit({ limit: 50 }).some((x) => x.action === 'analyze' && x.target === fresh.path));
   // a failure is reported by GET and leaves the earlier result in place
   reset();
@@ -215,8 +222,69 @@ if [ -f "$FAKE_OUT.$kind.reply.$n" ]; then cat "$FAKE_OUT.$kind.reply.$n"; else 
   await analysisSettled(vault, fresh.path);
   const failed = analysisStatus(vault, fresh.path);
   assert.equal(failed.status, 'error');
-  assert.ok(/分析没有成功/.test(failed.error) && failed.analysis.text.includes('## 原文要点'));
+  assert.ok(/分析没有成功/.test(failed.error) && failed.analysis.text.includes('## 解读'));
   console.log('ok 8  REST: start, follow, scopes, and a failure that keeps the last good analysis');
+
+  // 9. when the original is the point, a failed web step stores nothing; a sidecar from before the original was kept still reads
+  const dir = path.join(tmp, '.notebook', 'analysis');
+  const sidecars = () => fs.readdirSync(dir).filter((x) => x.endsWith('.md'));
+  const old = vault.createNote({ folder: '快讯', title: '旧格式的一条', body: '旧记录 https://example.com/old', properties: { source: 'owner' } });
+  reset();
+  fs.writeFileSync(`${out}.web.reply`, reply('permission required', { stopReason: 'cancelled' })); fs.writeFileSync(`${out}.local.reply`, reply(LOCAL));
+  const before9 = sidecars();
+  await assert.rejects(analyze(vault, auth, old.path, { requireWeb: true }), /没能读到原文/);
+  assert.deepEqual(sidecars(), before9, 'nothing is stored without the original');
+  await analyze(vault, auth, old.path, { web: false });
+  const oldFile = path.join(dir, sidecars().find((x) => !before9.includes(x)));
+  fs.writeFileSync(oldFile, fs.readFileSync(oldFile, 'utf8').replace('## 和已有记录的关联', '## 原文要点\n- 旧要点。\n\n## 背景\n- 旧背景。\n\n## 和已有记录的关联'));
+  const o = readAnalysis(vault, vault.getNote(old.path));
+  assert.ok(o.text.startsWith('## 原文要点') && o.text.includes('## 对我意味着什么') && o.original.length === 0, 'shown as it was written');
+  console.log('ok 9  requireWeb stores nothing when the original could not be fetched; older sidecars still read');
+
+  // 10. on its own: only notebooks the owner set to `analyze: auto`, only new records with a link, one at a time, twice at most
+  const writer = auth.createToken('writer', { scopes: ['read', 'write'], folders: ['*'] }).token;
+  const isAuto = (f) => vault.listNotebooks().find((n) => n.folder === f).analyze === 'auto';
+  const nbUrl = (f) => '/api/notebooks/' + encodeURIComponent(f);
+  await call('PATCH', nbUrl('快讯'), writer, { analyze: 'auto' });
+  assert.equal(isAuto('快讯'), false, 'an agent token cannot make a notebook fetch on its own');
+  assert.equal((await call('PATCH', nbUrl('快讯'), owner, { analyze: 'auto' })).status, 200);
+  assert.equal(isAuto('快讯'), true);
+  await call('PATCH', nbUrl('快讯'), writer, { description: '每天的行业快讯。' });
+  assert.equal(isAuto('快讯'), true, 'another edit leaves the setting alone');
+  await call('PATCH', nbUrl('财务'), owner, { analyze: 'auto' });
+  assert.equal(isAuto('财务'), false, 'never for a journal');
+  for (const c of autoCandidates(vault)) await analyze(vault, auth, c.path, { web: false }); // records left over from the checks above
+  const n1 = vault.createNote({ folder: '快讯', title: '新的一条快讯', body: '有人发了长文 https://x.com/someone/status/2', properties: { source: 'phone-agents' } });
+  vault.createNote({ folder: '快讯', title: '没有链接的一条', body: '只是一句话。', properties: { source: 'owner' } });
+  vault.createNote({ folder: '财务', title: '今天的仓位', body: '仓位 https://example.com/p', properties: { source: 'owner' } });
+  assert.deepEqual(autoCandidates(vault).map((x) => x.path), [n1.path], 'a new record with a link and no analysis, in an auto notebook');
+  assert.deepEqual(autoCandidates(vault, { now: new Date(Date.now() + 3 * 86400000) }), [], 'older records wait for the button');
+  const n1Url = '/api/analysis/' + n1.path.split('/').map(encodeURIComponent).join('/');
+  assert.equal((await call('GET', n1Url, owner)).body.queued, true, 'the page is told the record is in line');
+  assert.equal(await autoTick(vault, auth, { cap: 0 }), null, 'the daily ceiling holds');
+  reset();
+  fs.writeFileSync(`${out}.web.reply`, reply(WEB)); fs.writeFileSync(`${out}.local.reply`, reply(LOCAL));
+  const done1 = [];
+  assert.deepEqual(await autoTick(vault, auth, { onDone: (x, p) => done1.push(p) }), { path: n1.path, ok: true });
+  assert.deepEqual(done1, [n1.path]);
+  assert.equal(readAnalysis(vault, vault.getNote(n1.path)).original[0].text, ORIGINAL);
+  assert.equal((await call('GET', n1Url, owner)).body.queued, undefined);
+  assert.equal(await autoTick(vault, auth, {}), null, 'nothing left');
+  assert.deepEqual([autoStatus(vault).waiting, autoStatus(vault).today], [0, 1]);
+  const n2 = vault.createNote({ folder: '快讯', title: '打不开的一条', body: '链接 https://x.com/someone/status/3', properties: { source: 'phone-agents' } });
+  fs.writeFileSync(`${out}.web.reply`, reply('permission required', { stopReason: 'cancelled' }));
+  const before10 = sidecars();
+  const t1 = await autoTick(vault, auth, {});
+  assert.ok(t1.path === n2.path && t1.ok === false && /没能读到原文/.test(t1.error));
+  assert.deepEqual(sidecars(), before10);
+  assert.equal(analysisStatus(vault, n2.path).status, 'none', 'a failure nobody asked for is not shown on the page');
+  assert.equal(autoWaiting(vault, n2.path), true);
+  assert.equal(await autoTick(vault, auth, {}), null, 'not again right away');
+  const later = new Date(Date.now() + 11 * 60000);
+  assert.equal((await autoTick(vault, auth, { now: later })).ok, false, 'once more after a while');
+  assert.equal(autoWaiting(vault, n2.path, { now: later }), false);
+  assert.equal(await autoTick(vault, auth, { now: new Date(Date.now() + 40 * 60000) }), null, 'twice is enough: it waits for the button');
+  console.log('ok 10 automatic: owner-only switch, new linked records only, one at a time, two tries, a daily ceiling');
 
   console.log('\nall analyze checks passed');
 } finally {

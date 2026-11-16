@@ -511,6 +511,17 @@ a.card-box:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); 
 .analysis-body ul, .analysis-body ol { margin: .3em 0 .6em; padding-left: 1.3em; }
 .analysis-src { font-family: var(--font); margin-top: 10px; font-size: 12.5px; color: var(--text-3); line-height: 2; }
 .analysis-src p { margin: 0; }
+/* the fetched original: somebody else's words, set apart from the reading below it */
+.original { margin-top: 14px; padding: 12px 14px 10px; background: var(--bg-sub); border-radius: var(--r-s); }
+.original + .md.analysis-body { margin-top: 18px; }
+.original-head { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; font-size: 12.5px; }
+.original-head a { color: var(--accent-text); text-decoration: none; overflow-wrap: anywhere; }
+.original-head .meta { color: var(--text-3); font-size: 12px; }
+.original-text { margin-top: 8px; font-size: 15px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.original-text.clamp { max-height: 15.75em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.original-more { display: inline-block; margin-top: 6px; padding: 2px 0; font-size: 12.5px; background: none; border: none; cursor: pointer; }
+.form .check-row { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; line-height: 1.5; font-weight: 400; color: var(--text-2); }
+.form .check-row input { margin-top: 3px; flex: none; }
 .colophon { font-family: var(--font); font-size: 12px; color: var(--text-3); margin-top: 40px; padding-top: 10px; border-top: 1px solid var(--border-2); letter-spacing: .01em; word-break: break-all; }
 .article-page .body-view > p:first-child { font-size: 19.5px; line-height: 1.7; margin-bottom: .7em; }
 .article-page .body-view.dropcap > p:first-child::first-letter { float: left; font-family: var(--serif); font-size: 3.35em; line-height: .82; font-weight: 700; padding: .1em .12em 0 0; color: var(--text); }
