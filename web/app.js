@@ -1419,11 +1419,22 @@ function snippetDetails(r) {
     el('div', { class: 'code' }, r.claudeCmd));
 }
 
+/** "3 小时前": how long ago a token was last used. */
+function ago(iso) {
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.floor(m / 60)} 小时前` : `${Math.floor(m / 1440)} 天前`;
+}
+
 async function viewAgents(main) {
-  const data = await get('/api/agents');
+  const [data, tokens] = await Promise.all([get('/api/agents'), get('/api/tokens').catch(() => [])]);
+  // Is the notebook running on the computer in front of the owner? On a server the page can only see the server's own
+  // software, so who is connected is read from the tokens instead, and the detected cards move down and say whose they are.
+  const here = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
   const page = el('div', { class: 'page settings' });
   page.append(el('h1', { class: 'page-title' }, '接入 Agent'),
-    el('p', {}, '下面是在这台电脑上检测到的 agent。点「一键接入」会：为它生成一个专属 token → 把 MCP 配置写进它的配置文件（原文件先备份为 .bak）→ 装上使用说明 Skill。之后重启那个 agent 就能用了。'));
+    el('p', {}, here
+      ? '下面是在这台电脑上检测到的 agent。点「一键接入」会：为它生成一个专属 token → 把 MCP 配置写进它的配置文件（原文件先备份为 .bak）→ 装上使用说明 Skill。之后重启那个 agent 就能用了。'
+      : '笔记本运行在一台服务器上。每个 agent 拿着自己的令牌（token）来读写，装在哪台电脑或手机上都一样。下面先是已经在用的，然后是给新 agent 生成令牌的表单。'));
   const section = (title, list, desc) => {
     if (!list.length) return;
     page.append(el('h2', {}, title));
@@ -1432,11 +1443,42 @@ async function viewAgents(main) {
     for (const a of list) grid.append(agentCard(a));
     page.append(grid);
   };
-  section('可一键接入', data.agents.filter((a) => a.detected && !a.connected && a.canWrite));
-  section('已接入', data.agents.filter((a) => a.connected), '再次接入会生成新的 token 并覆盖该 agent 配置里的 agent-notebook 条目。');
-  section('需要在应用内手动添加', data.agents.filter((a) => a.detected && !a.canWrite), '这些应用的 MCP 设置在它们自己的界面里。点「生成配置」拿到地址和 token，粘贴进去即可。');
+  const detectedSections = () => {
+    section(here ? '可一键接入' : '服务器上可一键接入', data.agents.filter((a) => a.detected && !a.connected && a.canWrite), here ? '' : '这些是装在服务器这台机器上的 agent，「一键接入」改的是服务器上的配置文件。');
+    section(here ? '已接入' : '服务器上已写好配置', data.agents.filter((a) => a.connected), '再次接入会生成新的 token 并覆盖该 agent 配置里的 agent-notebook 条目。');
+    section(here ? '需要在应用内手动添加' : '服务器上需要手动添加', data.agents.filter((a) => a.detected && !a.canWrite), '这些应用的 MCP 设置在它们自己的界面里。点「生成配置」拿到地址和 token，粘贴进去即可。');
+  };
 
-  page.append(el('h2', {}, '其他 agent（Hermes、Muse、自写的 bot…）'), el('p', {}, '任何支持 MCP 或能发 HTTP 请求的 agent 都能接入。起个名字生成 token，把下面的 Skill 贴给它即可。一个 token 给几个 agent 共用也行：记录上标的是 agent 自报的名字（source / X-Agent-Name），MCP 客户端会按握手里的名字识别，都没有才显示 token 名。'));
+  // who actually uses the notebook: every agent token, by when it was last used (device logins are the owner's own browsers)
+  const agentTokens = tokens.filter((t) => !t.device).sort((a, b) => String(b.lastUsed || '').localeCompare(String(a.lastUsed || '')));
+  const recent = agentTokens.filter((t) => t.lastUsed && Date.now() - new Date(t.lastUsed).getTime() < 30 * 86400000);
+  const idle = agentTokens.filter((t) => !recent.includes(t));
+  if (agentTokens.length) {
+    const known = (n) => data.agents.find((a) => a.id === String(n).toLowerCase().replace(/-\d+$/, ''));
+    page.append(el('h2', {}, '正在使用'), el('p', {}, '最近 30 天用过令牌的 agent，最近用的排在前面。要撤销某个令牌，去 ', el('a', { href: '#/settings', style: 'color:var(--accent)' }, '设置'), ' 里的令牌表。'));
+    const box = el('div', { class: 'card-box', style: 'padding:6px 16px' });
+    for (const t of recent) {
+      const a = known(t.name);
+      const limited = Array.isArray(t.folders) && t.folders.length && !t.folders.includes('*');
+      box.append(el('div', { style: 'display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line, rgba(128,128,128,.16));flex-wrap:wrap' },
+        el('span', { style: 'font-size:18px;width:24px;text-align:center' }, a?.icon || '🤖'),
+        el('span', { style: 'font-weight:600' }, t.name),
+        a && a.name.toLowerCase() !== String(t.name).toLowerCase() && el('span', { class: 'muted', style: 'font-size:12.5px' }, a.name),
+        el('span', { class: 'chip' + (t.scopes?.includes('write') ? ' source' : '') }, t.scopes?.includes('admin') ? '可管理' : t.scopes?.includes('write') ? '可读写' : '只读'),
+        limited && el('span', { class: 'chip', title: t.folders.join('、') }, `仅 ${t.folders.join('、')}`),
+        el('span', { style: 'flex:1' }),
+        el('span', { class: 'muted', style: 'font-size:12.5px', title: fmtTime(t.lastUsed) }, ago(t.lastUsed))));
+    }
+    if (box.lastChild) box.lastChild.style.borderBottom = 'none';
+    else box.append(el('div', { class: 'muted', style: 'padding:9px 0;font-size:13px' }, '最近 30 天没有 agent 用过令牌。'));
+    page.append(box);
+    if (idle.length) page.append(el('p', { class: 'muted', style: 'font-size:12.5px' }, `另有 ${idle.length} 个令牌从未用过或超过 30 天没用：${idle.map((t) => t.name).join('、')}`));
+  }
+  if (here) detectedSections();
+
+  page.append(el('h2', {}, here ? '其他 agent（Hermes、Muse、自写的 bot…）' : '接入新的 agent'), el('p', {}, here
+    ? '任何支持 MCP 或能发 HTTP 请求的 agent 都能接入。起个名字生成 token，把下面的 Skill 贴给它即可。一个 token 给几个 agent 共用也行：记录上标的是 agent 自报的名字（source / X-Agent-Name），MCP 客户端会按握手里的名字识别，都没有才显示 token 名。'
+    : '你电脑上的 Claude Code、Cursor，手机上的 app，自写的 bot，都用这个表单：起个名字生成 token，把生成的配置贴给它。任何支持 MCP 或能发 HTTP 请求的 agent 都能接入。一个 token 给几个 agent 共用也行：记录上标的是 agent 自报的名字（source / X-Agent-Name），都没有才显示 token 名。'));
   const name = el('input', { type: 'text', placeholder: '例如 hermes、muse、my-bot' });
   const sWrite = el('input', { type: 'checkbox', checked: true });
   const folders = el('input', { type: 'text', placeholder: '留空 = 全部；或填 Alpha看板, 灵感' });
@@ -1454,8 +1496,11 @@ async function viewAgents(main) {
         out.innerHTML = ''; out.append(el('div', { class: 'token-box' }, el('div', { style: 'font-weight:600' }, `「${r.name}」的接入配置（token 只显示这一次）`), snippetBlocks(r))); name.value = '';
       } catch (err) { toast(err.message, true); }
     } }, '生成配置'))), out));
+  if (!here) detectedSections();
   const notFound = data.agents.filter((a) => !a.detected);
-  if (notFound.length) page.append(el('h2', {}, '未检测到'), el('p', { class: 'muted', style: 'font-size:13px' }, notFound.map((a) => `${a.icon} ${a.name}`).join('　')));
+  if (notFound.length && here) page.append(el('h2', {}, '未检测到'), el('p', { class: 'muted', style: 'font-size:13px' }, notFound.map((a) => `${a.icon} ${a.name}`).join('　')));
+  // on a server this list only says what is not installed there; an agent on the owner's own machine connects with a token all the same
+  if (notFound.length && !here) page.append(el('p', { class: 'muted', style: 'font-size:12.5px;margin-top:18px' }, `服务器这台机器上没有安装：${notFound.map((a) => a.name).join('、')}。这和它们有没有接入笔记本无关，接入看上面的「正在使用」。`));
   main.append(topbar([{ label: '接入 Agent' }]), page);
 }
 
